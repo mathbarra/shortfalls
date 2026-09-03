@@ -1,0 +1,9 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+shortfalls_data/shortfalls_data_user.rds
+*.bak
+.Rhistory
+shortfalls_data_aux/
