@@ -18,10 +18,19 @@ source("shortfalls_R_aux/shortfall_launcher.R")
 shortfall()        # shortfall_ps() lists instances, shortfall_kill() stops them
 ```
 
-## A note on documentation (0.99.0)
+**Detached means detached.** An instance started with `shortfall()` is a
+separate process: it keeps running -- and keeps serving on its port --
+after you close R, and even if R crashes. It stops only when you stop it.
+Before quitting for the day: `shortfall_kill("all")`. If you forgot and R
+is already gone, start any new R session and run the two lines above with
+`shortfall_ps()` / `shortfall_kill("all")` -- the registry finds orphaned
+instances across sessions (last resort: end the Rscript process in Task
+Manager).
 
-This release candidate is only modestly self-documenting. The app is
-meant for play-and-learn and is fairly intuitive -- pick a severity
+## A note on documentation
+
+This is a release candidate, and only modestly self-documenting. The app
+is meant for play-and-learn and is fairly intuitive -- pick a severity
 regime, a reference pairing and a condition, and watch the shortfall
 measures respond -- but tooltips, mouseovers and in-app explanation are
 thin. Later versions will carry more of the documentation into the
