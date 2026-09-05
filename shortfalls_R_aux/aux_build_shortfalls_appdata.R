@@ -67,6 +67,15 @@ tb_nl_m  <- read_stamped("tb_male_nld_2019.rds",        "Netherlands - HMD 2019 
 tb_nl_f  <- read_stamped("tb_female_nld_2019.rds",      "Netherlands - HMD 2019 (female)")
 tb_nl_p  <- read_stamped("tb_pool_nld_2019.rds",        "Netherlands - HMD 2019 (pooled)")
 
+## England, ONS 2017-2019: the vintage the DSU shortfall calculator's
+## reference case DELIBERATELY uses (commit 286c56e reverted it from
+## 2022-24), pre-pandemic like ZiN's HMD 2019. Harvested 2026-09-04 from
+## ltbl.mb's nlte198020223.json freeze; pooled survivor-weighted,
+## birth_ratio 1.051, same convention as every pooled table here.
+tb_on17_m <- read_stamped("tb_male_ons_2017_2019.rds",   "England - ONS 2017-2019 (male)")
+tb_on17_f <- read_stamped("tb_female_ons_2017_2019.rds", "England - ONS 2017-2019 (female)")
+tb_on17_p <- read_stamped("tb_pool_ons_2017_2019.rds",   "England - ONS 2017-2019 (pooled)")
+
 
 ## Sex-specific norms for England and Norway, copied verbatim from
 ## ltbl.mb (hence the source-style filenames). With these, every
@@ -116,6 +125,20 @@ for (v in c("nm_nl_m_nld", "nm_nl_f_nld", "nm_nl_p_nld",
 nm_nl_v <- read_stamped("qn_pool_nl_versteegh2016_samplepooled.rds",
                         "Netherlands - Versteegh 2016 (5L, sample-pooled)")
 
+## England 5L norms: HSE 2017-2018 profiles scored with the Rowen 2026
+## UK value set -- the NICE reference case from 2026-08-27 (PMG51; the
+## 12/18 and .85/.95 cut-offs are explicitly unchanged, FAQ 21).
+## Harvested from the DSU shortfall calculator v2 data (provenance
+## sidecar in DIN); the calculator reproduces to the digit under
+## year-wise discounting (25.29 @ age 0, 50/50, 3.5%; 2026-09-04).
+## McNamara 2018 (3L) remains the correct record for pre-PMG51 topics.
+nm_en5_m <- read_stamped("qn_male_en_rowen2026_hse20172018.rds",
+                         "England - HSE/Rowen 2026 (male, 5L)")
+nm_en5_f <- read_stamped("qn_female_en_rowen2026_hse20172018.rds",
+                         "England - HSE/Rowen 2026 (female, 5L)")
+nm_en5_p <- read_stamped("qn_pool_en_rowen2026_hse20172018.rds",
+                         "England - HSE/Rowen 2026 (pooled, 5L)")
+
 
 stopifnot(inherits(tb, "ltbl"), identical(attr(tb, "region"), "England"),
           !is.null(attr(tb, "source")))
@@ -146,7 +169,9 @@ nice_2022 <- new_sevset2(
   weight_native = "multiplier",
   ce_threshold = 20000, currency = "GBP", threshold_year = 2022L,
   discount_shortfall = TRUE, discount_rate = 0.035,
-  status = "current",
+  ## superseded by nice_2026 (PMG51, 2026-08-27) for topics starting
+  ## after that date; remains the correct record for ongoing/older topics.
+  status = "superseded",
   reference_hint = list(table = "ons_pool_2022_2024", norm = "ons_pool_2022_2024"),
   reference_spec = list(
     match = "age_sex",
@@ -158,6 +183,49 @@ nice_2022 <- new_sevset2(
     accessed = as.Date("2026-07-27"),
     citation = "NICE. NICE Health Technology Evaluations: The Manual. 2022.",
     notes = "Disjunctive max-rule; shortfall discounted at reference-case 3.5%. Scotland (SMC) is a separate regime."))
+
+## =====================================================================
+## 2b. NICE 2026 -- the 5L modular update (REAL). Same bands, new inputs:
+##     PMG51 (2026-08-27) makes the Rowen 2026 UK EQ-5D-5L value set the
+##     reference case for utilities AND for the shortfall's population
+##     norms (FAQ 21), while the 12/18 and .85/.95 cut-offs "remain
+##     unchanged". Prospective: topics starting after 2026-08-27.
+## =====================================================================
+nice_2026 <- new_sevset2(
+  id = "nice_2026", label = "NICE (England & Wales) - 2026 5L update",
+  region = "England & Wales", year = 2026L,
+  measures = c("AS","PS"), rule = "max",
+  bands = list(
+    AS = data.frame(lower = c(0, 12, 18),   upper = c(12, 18, Inf), weight = c(1, 1.2, 1.7)),
+    PS = data.frame(lower = c(0, .85, .95), upper = c(.85, .95, 1),  weight = c(1, 1.2, 1.7))),
+  weight_native = "multiplier",
+  ce_threshold = 20000, currency = "GBP", threshold_year = 2022L,
+  discount_shortfall = TRUE, discount_rate = 0.035,
+  status = "current", supersedes = "nice_2022",
+  reference_hint = list(table = "ons_pool_2017_2019", norm = "en_rowen_pool"),
+  reference_spec = list(
+    match = "age_sex",
+    value_set = "EQ-5D-5L, UK value set (Rowen et al. 2026)",
+    notes = paste("PMG51 FAQ 21: shortfall from 5L utilities and 5L population",
+                  "norms; cut-offs unchanged. The DSU calculator's reference",
+                  "case pairs the norms with ONS 2017-2019 life tables",
+                  "(deliberately PRE-pandemic, like ZiN's HMD 2019) and",
+                  "discounts YEAR-WISE: our freezes reproduce its QALE(0)",
+                  "of 25.29 (50/50, 3.5%) exactly under (1+r)^-t",
+                  "(verified 2026-09-04).")),
+  provenance = list(
+    source = "NICE interim methods statement: implementing the EQ-5D-5L value set (PMG51)",
+    url = "https://www.nice.org.uk/process/pmg51",
+    accessed = as.Date("2026-09-04"),
+    citation = paste("NICE (2026). Interim methods statement: implementing the",
+                     "EQ-5D-5L value set. Published 2026-08-27. Norms: DSU QALY",
+                     "Shortfall Calculator v2; value set: Rowen D, Mukuria C,",
+                     "Bray N, et al. A United Kingdom value set for the",
+                     "EQ-5D-5L. Value Health 2026;29(5):858-869."),
+    notes = paste("Bands identical to nice_2022; the update changes the value",
+                  "set and reference norms only. Applies to topics with an",
+                  "invitation to participate issued after 2026-08-27; older",
+                  "topics keep the 3L reference (5L data mapped to 3L).")))
 
 ## =====================================================================
 ## 3. Norway -- Magnussen six severity classes (REAL).
@@ -256,9 +324,11 @@ nl_2018 <- new_sevset2(
 ##    labels are already on the objects, so they ride into the store.
 ## =====================================================================
 store <- new_shortfalls(
-  defaults = list(sevset = "nice_2022",
-                  norm   = "ons_pool_2022_2024",
-                  table  = "ons_pool_2022_2024"),
+  ## the regulator-current reference case (PMG51): nice_2026 paired as
+  ## the DSU calculator pairs it. nice_2022's triplet remains available.
+  defaults = list(sevset = "nice_2026",
+                  norm   = "en_rowen_pool",
+                  table  = "ons_pool_2017_2019"),
   builder  = paste0("aux_build_shortfalls_appdata.R @ ", git_sha %||% "nogit"))
 
 store <- add_ltbl(store, "ons_pool_2022_2024",   tb)
@@ -267,6 +337,15 @@ store <- add_ltbl(store, "ons_male_2022_2024",   tb_ons_m)
 store <- add_norm(store, "ons_male_2022_2024",   nm_ons_m)
 store <- add_ltbl(store, "ons_female_2022_2024", tb_ons_f)
 store <- add_norm(store, "ons_female_2022_2024", nm_ons_f)
+
+## England 5L strand (PMG51): tables keyed by vintage, norms carry the
+## instrument (en_rowen_*), per the Dutch precedent.
+store <- add_ltbl(store, "ons_pool_2017_2019",   tb_on17_p)
+store <- add_ltbl(store, "ons_male_2017_2019",   tb_on17_m)
+store <- add_ltbl(store, "ons_female_2017_2019", tb_on17_f)
+store <- add_norm(store, "en_rowen_pool",        nm_en5_p)
+store <- add_norm(store, "en_rowen_male",        nm_en5_m)
+store <- add_norm(store, "en_rowen_female",      nm_en5_f)
 
 store <- add_ltbl(store, "no_pool_2025",         tb_no)
 store <- add_norm(store, "no_pool_2025",         nm_no)
@@ -293,6 +372,7 @@ store <- add_norm(store, "nl_versteegh",         nm_nl_v)
 store <- add_norm(store, "full_health", nm_full_healt)
 
 store <- add_sevset(store, "nice_2022",   nice_2022)
+store <- add_sevset(store, "nice_2026",   nice_2026)
 store <- add_sevset(store, "norway_2020", norway_2020)
 store <- add_sevset(store, "nl_2018",     nl_2018)
 
@@ -358,5 +438,6 @@ green_check <- function(sid, tkey, nkey = tkey) {
 }
 cat("\npairing checks:\n")
 green_check("nice_2022",   "ons_pool_2022_2024")
+green_check("nice_2026",   "ons_pool_2017_2019", "en_rowen_pool")
 green_check("norway_2020", "no_pool_2025")
 green_check("nl_2018", "nl_pool_2019", "nl_heijink_pool_nld")

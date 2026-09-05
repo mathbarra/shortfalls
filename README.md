@@ -8,7 +8,7 @@ regimes. Presented at PoPS26.
 
 ```r
 renv::restore()   # once, after cloning
-shiny::runApp("shortfalls_app_0_99_0.R")
+shiny::runApp("shortfalls_app_0_99_1.R")
 ```
 
 Or detached (your R session stays free):

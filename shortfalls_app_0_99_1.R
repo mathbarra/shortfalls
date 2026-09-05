@@ -1,4 +1,4 @@
-## shortfalls_app.R  (0.99.0 RC -- release candidate for 1.0.0) ####
+## shortfalls_app.R  (0.99.1 RC -- release candidate for 1.0.0) ####
 ## ---------------------------------------------------------------------#
 ## Interactive AS/PS severity visualiser for the premature-death scenario.
 ##
@@ -22,6 +22,9 @@
 ## discounted at its midpoint. Year-wise (1+rho)^(-t) is selectable but
 ## understates sub-year shortfall. Applies to the with-condition stream;
 ## the reference QALE is cached and recomputed only on norm/table/rho/mode.
+## Person-years are half-cycle corrected (a death year counts half), the
+## DSU shortfall calculator's convention; in year-wise mode the reference
+## QALE reproduces that tool to the digit (validated 2026-09-05).
 ##
 ## SEVERITY RIBBON. A strip below the x-axis showing, per age, the applied
 ## weight and the decisive criterion (AS / PS / AS.PS) under the regime's
@@ -373,10 +376,16 @@ gv <- function(df, ac, vc) {
 
 ## discounted quality-adjusted expectancy from age a, given mortality qmod
 ## (survival) and HRQoL qv, both on 0:TOP. t = 0,1,2,... years from a.
+## 0.99.1: (i) survival now indexes q at ages a..TOP (was a-1..TOP-1, a
+## one-year lag); (ii) half-cycle person-years L = S(1 - q/2), so a death
+## year counts half -- matching e_at()'s existing -0.5 and the DSU
+## shortfall calculator's convention (validated to the digit 2026-09-05).
 eq_from <- function(a, qmod, qv, r, mode) {
   ages <- a:TOP
-  S <- c(1, cumprod(1 - qmod[a:(TOP)][-length(ages)]))
-  sum(S * qv[ages + 1] * .disc_w(0:(length(ages) - 1), r, mode))
+  q <- qmod[ages + 1]
+  S <- c(1, cumprod(1 - q[-length(q)]))
+  L <- S * (1 - q / 2)
+  sum(L * qv[ages + 1] * .disc_w(0:(length(ages) - 1), r, mode))
 }
 
 ## reference QALE Q(a) for every plotted age, in ONE pass. Depends only on
