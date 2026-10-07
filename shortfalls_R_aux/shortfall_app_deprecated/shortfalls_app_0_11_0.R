@@ -1,4 +1,4 @@
-## shortfalls_app.R  (0.99.1 RC -- release candidate for 1.0.0) ####
+## premature_death_app.R  (0.11.0 BETA) ####
 ## ---------------------------------------------------------------------#
 ## Interactive AS/PS severity visualiser for the premature-death scenario.
 ##
@@ -22,9 +22,6 @@
 ## discounted at its midpoint. Year-wise (1+rho)^(-t) is selectable but
 ## understates sub-year shortfall. Applies to the with-condition stream;
 ## the reference QALE is cached and recomputed only on norm/table/rho/mode.
-## Person-years are half-cycle corrected (a death year counts half), the
-## DSU shortfall calculator's convention; in year-wise mode the reference
-## QALE reproduces that tool to the digit (validated 2026-09-05).
 ##
 ## SEVERITY RIBBON. A strip below the x-axis showing, per age, the applied
 ## weight and the decisive criterion (AS / PS / AS.PS) under the regime's
@@ -33,7 +30,7 @@
 ##
 ## THRESHOLD AUTHOR (tab). Fork an existing regime, edit its bands, choose
 ## measures and (for two measures) a combining rule, and save. LOCAL mode
-## persists to shortfalls_data/shortfalls_data_user.rds and can
+## persists to shortfalls_data/shortfalls_data_user.rds (reappears next launch) and can
 ## delete authored regimes; SERVER mode is session-only + download and
 ## never writes to disk. Built-in regimes are immutable.
 ##
@@ -50,8 +47,6 @@
 
 library(shiny)
 library(plotly)
-library(shinyWidgets)
-
 
 pal <- c(SPBlue='#002768', SPGreen='#64A620', SPRed='#EF2B2D', SPYellow='#FECA00',
          SPPurple='#756FB9', SPBlueLight='#80A8D9', SPGreenLight='#64D292',
@@ -68,7 +63,7 @@ LOG_BASE <- 2      # slider is log_OR_BASE(OR); 0 = no excess (OR = 1)
 
 ## READ THIS BEFORE SERVER DEPLOYMENT!!!!####
 ## Deployment mode. LOCAL: authored regimes persist to shortfalls_data_user.rds
-## SERVER: session-only + download; never writes
+## and reappear next launch. SERVER: session-only + download; never writes
 ## to server disk. NOTE: the flag is INTENT, not security -- real server
 ## safety comes from running the process with the app dir READ-ONLY to the
 ## shiny user, so save cannot write regardless. See save handler.
@@ -151,9 +146,9 @@ load_shortfalls <- function(path = SF) {
 }
 
 
-## display label for a container object (falls back to the id)
-.obj_label <- function(lst, id) {
-  o <- lst[[id %||% ""]]
+## display label for a container id in a given sublist (falls back to the id)
+.id_label <- function(sub, id) {
+  o <- store[[sub]][[id %||% ""]]
   if (is.null(o)) return(id %||% "?")
   attr(o, "label") %||% attr(o, "menu_label") %||% id
 }
@@ -224,7 +219,7 @@ compatible <- function(set, norm, ltbl, norm_id, table_id, override = NULL) {
   list(status = status, reasons = reasons)
 }
 
-## Inlined BUILD-side machinery for the Threshold author tab. ###
+## Inlined BUILD-side machinery for the Threshold author tab. ####
 ## KEEP IN SYNC with shortfalls_R_aux/aux_sevset.R and aux_sevset_ext.R.
 ## The app is self-contained (deploy = this file + shortfalls_data.rds), so the
 ## editor's construct/validate/write logic is duplicated here rather than
@@ -316,8 +311,6 @@ save_user_sevset <- function(set, path = SF_USER) {
 }
 
 
-
-
 ## =====================================================================#
 ## LOAD THE CONTAINER ####
 ## =====================================================================#
@@ -331,14 +324,6 @@ store <- load_shortfalls(SF)
 ## Author tab live here too. Canonical ids always win a collision, and an
 ## overlay object is marked non-canonical on the way in (a sevset carries
 ## the flag as a field, a condition as an attribute).
-
-
-CANON <- list(sf_thresholds = store$sf_thresholds,
-              hrqol_norms   = store$hrqol_norms,
-              life_tables   = store$life_tables,
-              sf_conditions = store$sf_conditions %||% list())
-
-
 if (identical(APP_MODE, "local") && file.exists(SF_USER)) {
   ov <- tryCatch(readRDS(SF_USER), error = function(e) NULL)
   if (!is.null(ov))
@@ -376,16 +361,10 @@ gv <- function(df, ac, vc) {
 
 ## discounted quality-adjusted expectancy from age a, given mortality qmod
 ## (survival) and HRQoL qv, both on 0:TOP. t = 0,1,2,... years from a.
-## 0.99.1: (i) survival now indexes q at ages a..TOP (was a-1..TOP-1, a
-## one-year lag); (ii) half-cycle person-years L = S(1 - q/2), so a death
-## year counts half -- matching e_at()'s existing -0.5 and the DSU
-## shortfall calculator's convention (validated to the digit 2026-09-05).
 eq_from <- function(a, qmod, qv, r, mode) {
   ages <- a:TOP
-  q <- qmod[ages + 1]
-  S <- c(1, cumprod(1 - q[-length(q)]))
-  L <- S * (1 - q / 2)
-  sum(L * qv[ages + 1] * .disc_w(0:(length(ages) - 1), r, mode))
+  S <- c(1, cumprod(1 - qmod[a:(TOP)][-length(ages)]))
+  sum(S * qv[ages + 1] * .disc_w(0:(length(ages) - 1), r, mode))
 }
 
 ## reference QALE Q(a) for every plotted age, in ONE pass. Depends only on
@@ -613,32 +592,18 @@ ui <- fluidPage(
     column(3, selectInput("norm", "HRQoL norm",
                           choices = .labels_for(store$hrqol_norms), selected = DEF$norm)),
     column(3, selectInput("table", "Life table",
-                          choices = .labels_for(store$life_tables), selected = DEF$table)),
-    column(1,
-           tags$label("Condition as", tags$br(), "reference", class = "control-label"),
-           div(title = "Enable the use of life tables and HRQoL from conditions as shortfall reference.
-               Can be used to explore excess shortfall from co-morbidities.",
-               materialSwitch("use_cond_ref", label = NULL, value = FALSE,
-                              status = "danger"))
-    ),
-    column(1, div(style = "margin-top:25px;",
-                  actionButton("reload", "Refresh", title =
-                                 "Re-read authored regimes and conditions from disk")))
+                          choices = .labels_for(store$life_tables), selected = DEF$table))
   ),
   
   fluidRow(
     column(6, sliderInput("r", "Discount rate \u03c1", min = 0, max = 0.10,
                           value = 0.035, step = 0.001, width = "100%")),
-    column(2,
-           radioGroupButtons("disc", "Discounting",
-                             c("Continuous" = "cont", "Year-wise" = "disc"),
-                             selected = "cont", size = "sm")),
+    column(2, radioButtons("disc", "Discounting",
+                           c("Continuous"="cont","Year-wise"="disc"), selected = "cont")),
     column(2, numericInput("r_max", "\u03c1 slider max", value = 0.10,
                            min = 0.01, max = 1, step = 0.01)),
-    column(1,
-           tags$label("Allow \u03c1 < 0", class = "control-label"),
-           div(materialSwitch("r_neg", label = NULL, value = FALSE,
-                              status = "warning")))
+    column(2, div(style = "margin-top:25px;",
+                  checkboxInput("r_neg", "Allow \u03c1 < 0", value = FALSE)))
   ),
   fluidRow(
     column(10, uiOutput("rho_warn"))
@@ -652,17 +617,16 @@ ui <- fluidPage(
   tabsetPanel(
     tabPanel("Severity regime explorer",
              br(),
-             fluidRow(column(3,h3('Severity regime explorer'))),
+             fluidRow(column(3,h3('Severity regime explorer')),
+                      column(2, div(style="margin-top:2px;",
+                                    checkboxInput("show_cross", "Crossing guides", value = FALSE)))),
              fluidRow(
                column(6,
                       sliderInput("rs", "RS (remaining survival)", min = 0, max = 40,
                                   value = 5, step = 1, width = "100%"),
                       div(style=sprintf("font-family:%s;font-size:11px;color:#999;margin-top:-6px;", FONT_BODY),
                           textOutput("rs_hint", inline = TRUE))),
-               column(1,
-                      tags$label("Crossing guides", class = "control-label"),
-                      div(materialSwitch("show_cross", label = NULL, value = FALSE,
-                                         status = "success")))),
+             ),
              plotlyOutput("plot", height = "680px"),
              div(style="color:#666;font-size:12px;margin-top:8px;",
                  "Vantage = onset. Guaranteed W survival, then certain death; HRQoL = norm. ",
@@ -710,15 +674,14 @@ ui <- fluidPage(
     ## ---- Condition explorer -----------------------------------------
     tabPanel("Condition explorer",
              br(),
-             fluidRow(column(6,h3('Condition explorer'))),
+             fluidRow(column(6,h3('Conditon explorer'))),
              fluidRow(
                column(4, selectInput("cond", "Condition",
                                      choices = c("manual (sliders)" = "__manual__"),
                                      selected = "__manual__")),
-               column(2,
-                      radioGroupButtons("view", "Layout",
-                                        c("Overlaid" = "ov", "Side-by--side" = "sbs"),
-                                        selected = "sbs", size = "sm")),
+               column(4, radioButtons("view", "Layout", inline = TRUE,
+                                      c("overlaid" = "ov", "undisc | disc" = "sbs"),
+                                      selected = "ov")),
                column(4, sliderInput("age", "Vantage age a",
                                      min = 0, max = 90, value = 35, step = 1))
              ),
@@ -729,7 +692,7 @@ ui <- fluidPage(
                  column(4, sliderInput("m", "HRQoL scale from onset (1 = none)",
                                        min = 0.1, max = 1, value = 0.6, step = 0.05)),
                  column(4, sliderInput("or_log", "log\u2082-mortality OR from onset (0 = no excess)",
-                                       min = 0, max = 10, value = 1, step = 0.025)),
+                                       min = 0, max = 6, value = 1, step = 0.025)),
                ),
                div(style = "color:#666;font-size:12px;margin-top:-6px;",
                    textOutput("or_readout"))),
@@ -741,62 +704,52 @@ ui <- fluidPage(
              uiOutput("cond_info")
     ),
 
-    ## ---- Condition Editor-------------------------------------------
+    ## ---- Author condition -------------------------------------------
     tabPanel("Condition editor",
              br(),
-             fluidRow(column(1,h3('Condition editor')),
-                      column(1,actionButton("cond_reset", "Reset condition",class = "btn-danger",
-                                            style = "margin-top:25px;width:100%;"))),
+             fluidRow(column(6,h3('Conditon editor'))),
              fluidRow(
                column(6,
                       h4("Mortality OR profile"),
                       helpText("Age 0 pinned at OR 1; age", TOP, "inherits the last knot. ",
-                               "Click a marker to activate. Double-click the plot to add a ",
-                               "knot, or double-click a marker to remove it."),
-                     
-                        
+                               "Click a marker to activate it, then use the slider."),
                       fluidRow(
-                        column(2, selectInput("or_rule", "Between knots",
+                        column(4, numericInput("or_nk", "Interior knots", value = 1,
+                                               min = 0, max = 8, step = 1)),
+                        column(4, selectInput("or_rule", "Between knots",
                                               c("shock (step)" = "constant",
                                                 "ramp (linear)" = "linear"),
                                               selected = "constant")),
-                        column(5, sliderInput("or_age", "Active knot age",
-                                              min = 1, max = TOP - 1, value = 30,
-                                              step = 1, width = "100%")),
-                        column(5, sliderInput("or_slider", "Active knot OR (log\u2082)",
-                                              min = 0, max = 10, value = 1,
+                        column(4, sliderInput("or_slider", "Active knot OR (log\u2082)",
+                                              min = 0, max = 6, value = 1,
                                               step = 0.05, width = "100%"))),
                       uiOutput("or_age_ui"),
-                      plotOutput("or_preview", height = "170px",
-                                 click = "or_click", dblclick = "or_dbl")),
+                      plotOutput("or_preview", height = "170px", click = "or_click")),
                column(6,
                       h4("HRQoL scale profile"),
                       helpText("Age 0 pinned at scale 1; age", TOP, "inherits the last knot. ",
-                               "Click a marker to activate. Double-click the plot to add a ",
-                               "knot, or double-click a marker to remove it."),
+                               "Click a marker to activate, then use the slider (1 = no morbidity)."),
                       fluidRow(
-                        column(2, selectInput("m_rule", "Between knots",
+                        column(4, numericInput("m_nk", "Interior knots", value = 1,
+                                               min = 0, max = 8, step = 1)),
+                        column(4, selectInput("m_rule", "Between knots",
                                               c("shock (step)" = "constant",
                                                 "ramp (linear)" = "linear"),
-                                              selected = "constant")),
-                        column(5, sliderInput("m_age", "Active knot age",
-                                              min = 1, max = TOP - 1, value = 30,
-                                              step = 1, width = "100%")),
-                        column(5, sliderInput("m_slider", "Active knot scale",
+                                              selected = "linear")),
+                        column(4, sliderInput("m_slider", "Active knot scale",
                                               min = 0.05, max = 1, value = 0.6,
                                               step = 0.01, width = "100%"))),
-                      plotOutput("m_preview", height = "170px",
-                                 click = "m_click", dblclick = "m_dbl"))
+                      uiOutput("m_age_ui"),
+                      plotOutput("m_preview", height = "170px", click = "m_click"))
              ),
              hr(),
              h5("Preview against the selected reference life table and HRQoL-norm:"),
              fluidRow(
                column(4, sliderInput("a_auth", "Vantage age", min = 0, max = 90,
                                      value = 0, step = 1)),
-               column(2,
-                      radioGroupButtons("auth_view", "Layout",
-                                        c("Overlaid" = "ov", "Side-by--side" = "sbs"),
-                                        selected = "sbs", size = "sm"))
+               column(4, radioButtons("auth_view", "Layout", inline = TRUE,
+                                      c("overlaid" = "ov", "undisc | disc" = "sbs"),
+                                      selected = "ov"))
              ),
              plotOutput("auth_plot", height = "300px"),
              uiOutput("auth_compare"),
@@ -839,11 +792,10 @@ ui <- fluidPage(
                     "\u03c1. No HRQoL and no severity regime \u2013 the discounting kernel on ",
                     "its own, showing where the present value of a future is located."),
              fluidRow(
-               column(2,radioGroupButtons(
-                 "vp_hmode", "Horizon set by",
-                 c("years" = "t", "age \u2192 e(age)" = "a"),
-                 selected = "a", size = "sm")),
-               column(2, conditionalPanel(
+               column(4, radioButtons("vp_hmode", "Horizon set by", inline = TRUE,
+                                      c("years" = "t", "age \u2192 e(age)" = "a"),
+                                      selected = "a")),
+               column(4, conditionalPanel(
                  "input.vp_hmode == 't'",
                  numericInput("vp_T", "Horizon t (years, any t > 0)",
                               value = 53, min = 0.5, step = 1))),
@@ -874,112 +826,11 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   
   ## -- the chosen triplet -------------------------------------------##
-  set  <- reactive(sevsets_r()[[input$sevset]])
-  ## Split a condition into its two halves on demand. NOT stored in the
-  ## container: the halves must track the condition, and a duplicate would
-  ## drift the moment the condition were re-authored.
-  ##
-  ## canonical = FALSE is deliberate -- compatible() already reds on a
-  ## forced non-container reference, so the experimental status is announced
-  ## by machinery that exists rather than by a new rule.
-  .cond_half <- function(id, what) {
-    o <- conds_r()[[sub("^cond:", "", id)]]
-    if (is.null(o)) return(NULL)
-    lab <- attr(o, "menu_label") %||% id
-    src <- paste0("DERIVED from condition '", lab,
-                  "' \u2013 not a published reference")
-    if (identical(what, "norm"))
-      structure(data.frame(age = o$age, hrqol = o$hrqol),
-                region = "derived", sex = "any", valueset = "derived",
-                source = src, label = paste0("[condition] ", lab),
-                canonical = FALSE)
-    else
-      structure(data.frame(a = o$age, mu = o$mu),
-                region = "derived", sex = "any",
-                source = src, label = paste0("[condition] ", lab),
-                canonical = FALSE)
-  }
-  
-  nmO <- reactive({
-    id <- input$norm %||% ""
-    if (startsWith(id, "cond:")) .cond_half(id, "norm") else norms_r()[[id]]
-  })
-  tbO <- reactive({
-    id <- input$table %||% ""
-    if (startsWith(id, "cond:")) .cond_half(id, "table") else tbls_r()[[id]]
-  })
+  set  <- reactive(read_sevset(store, input$sevset))
+  nmO  <- reactive(store$hrqol_norms[[input$norm]])
+  tbO  <- reactive(store$life_tables[[input$table]])
   qx   <- reactive(gv(tbO(), "a",  "mu"))
   qv   <- reactive(gv(nmO(), "age","hrqol"))
-  
-  sevsets_r <- reactiveVal(store$sf_thresholds)
-  norms_r   <- reactiveVal(store$hrqol_norms)
-  tbls_r    <- reactiveVal(store$life_tables)
-  conds_r   <- reactiveVal(store$sf_conditions %||% list())
-  
-  refresh_store <- function() {
-    out <- CANON
-    if (identical(APP_MODE, "local") && file.exists(SF_USER)) {
-      ov <- tryCatch(readRDS(SF_USER), error = function(e) NULL)
-      if (!is.null(ov))
-        for (sub in names(CANON))
-          for (id in names(ov[[sub]])) if (!id %in% names(out[[sub]])) {
-            o <- ov[[sub]][[id]]
-            if (sub == "sf_thresholds") o$canonical <- FALSE
-            else attr(o, "canonical") <- FALSE
-            out[[sub]][[id]] <- o
-          }
-    }
-    sevsets_r(out$sf_thresholds); norms_r(out$hrqol_norms)
-    tbls_r(out$life_tables);      conds_r(out$sf_conditions)
-  }
-  
-  ## turning the switch off must not strand a cond: selection
-  observeEvent(input$use_cond_ref, {
-    if (isTRUE(input$use_cond_ref)) return()
-    if (startsWith(input$norm  %||% "", "cond:"))
-      updateSelectInput(session, "norm",  selected = DEF$norm)
-    if (startsWith(input$table %||% "", "cond:"))
-      updateSelectInput(session, "table", selected = DEF$table)
-  }, ignoreInit = TRUE)
-  
-  ## every selector that lists a container sublist, refreshed together
-  observe({
-    sv <- sevsets_r(); cd <- conds_r()
-    lab  <- function(l) vapply(names(l), function(i) l[[i]]$label %||% i, "")
-    keep <- vapply(sv, function(s) (s$status %||% "current") %in%
-                     c("current", "provisional"), logical(1))
-    updateSelectInput(session, "sevset",
-                      choices  = stats::setNames(names(sv)[keep], lab(sv)[keep]),
-                      selected = isolate(input$sevset) %||% DEF$sevset)
-    updateSelectInput(session, "ed_fork",
-                      choices  = stats::setNames(names(sv), lab(sv)),
-                      selected = isolate(input$ed_fork))
-    ## A stored condition is (age, hrqol, mu): its mu column IS a life table
-    ## and its hrqol column IS a norm. When the switch is on, both halves are
-    ## offered alongside the published references, prefixed "cond:" so that
-    ## nmO/tbO can tell them apart. They are independently selectable, so a
-    ## chimera is possible -- one condition's mortality with a population
-    ## norm. That computes, and the badge says so; forbidding it would be the
-    ## app taking a stance it does not take elsewhere.
-    extra <- character(0)
-    if (isTRUE(input$use_cond_ref) && length(cd)) {
-      cl    <- .labels_for(cd)          # names = display label, values = id
-      extra <- stats::setNames(paste0("cond:", unname(cl)),
-                               paste0("[condition] ", names(cl)))
-    }
-    updateSelectInput(session, "norm",
-                      choices  = c(.labels_for(norms_r()), extra),
-                      selected = isolate(input$norm)  %||% DEF$norm)
-    updateSelectInput(session, "table",
-                      choices  = c(.labels_for(tbls_r()), extra),
-                      selected = isolate(input$table) %||% DEF$table)
-    updateSelectInput(session, "cond",
-                      choices  = c("manual (sliders)" = "__manual__", .labels_for(cd)),
-                      selected = isolate(input$cond) %||% "__manual__")
-    updateSelectInput(session, "edit_load",
-                      choices  = c("(none)" = "", .labels_for(cd)),
-                      selected = isolate(input$edit_load))
-  })
   
   ## cached reference QALE over plotted ages. Recomputes ONLY on
   ## qx / qv / rho / discounting-mode -- NOT on W or sevset.
@@ -992,10 +843,7 @@ server <- function(input, output, session) {
   #   ph
   # })
 
-  observeEvent(input$reload, {
-    refresh_store()
-    showNotification("Refreshed from disk", type = "message")
-  })
+  
   
   ## Remaining survival slider####
   ## unit state is authoritative; the slider value is read IN that unit.
@@ -1046,24 +894,9 @@ server <- function(input, output, session) {
                       step = signif(cap_ok / 100, 1),
                       value = min(max(isolate(input$r), lo), cap_ok))
   }, ignoreInit = TRUE)
-
-  ## regime-driven rho: choosing a regime moves the slider to that regime's
-  ## native practice -- NICE 0.035, Norway and ZiN undiscounted so 0. A
-  ## default, not a lock: the slider stays free, so the comparative move
-  ## (switch regime, watch discounting stop) needs no prior knowledge.
-  ## Authored sets carry the same fields, so they participate unchanged.
-  observeEvent(input$sevset, {
-    s <- set()
-    if (is.null(s)) return()
-    rho <- if (isTRUE(s$discount_shortfall)) s$discount_rate %||% 0 else 0
-    if (!is.finite(rho)) rho <- 0
-    cap <- max(0.01, min(1, isolate(input$r_max) %||% 0.10))
-    lo  <- if (isTRUE(isolate(input$r_neg))) -cap else 0
-    updateSliderInput(session, "r", value = min(max(rho, lo), cap))
-  }, ignoreInit = TRUE)
   
   output$rho_warn <- renderUI({
-    if (!isTruthy(input$r) || !is.finite(input$r) || input$r >= 0) return(NULL)
+    if (is.null(input$r) || input$r >= 0) return(NULL)
     div(style = sprintf("font-family:%s;color:%s;font-size:12px;margin-top:-4px;",
                         FONT_BODY, pal[['SPRed']]),
         HTML(sprintf("\u25B2 <b>Experimental:</b> \u03c1 = %.3f weights distant life-years <em>above</em> near ones. No jurisdiction's reference case permits this; shown to bracket the operator's effect, not as a policy option.", input$r)))
@@ -1326,7 +1159,7 @@ server <- function(input, output, session) {
                   tickformat='.0%', showgrid=FALSE, zeroline=FALSE,
                   visible=show_ps),
       legend=list(orientation='h', x=0, y=1.08),
-      margin=list(r=90, b=110), font=list(family=FONT_HEAD, size=14),
+      margin=list(r=70, b=110), font=list(family=FONT_HEAD, size=14),
       shapes = c(hshapes, vlines), annotations = ann)
   })
 
@@ -1339,7 +1172,7 @@ server <- function(input, output, session) {
   
   ## load a chosen set's bands into the editor
   observeEvent(input$ed_load, {
-    s <- sevsets_r()[[input$ed_fork]]
+    s <- read_sevset(store, input$ed_fork)
     ed_bands$AS <- if ("AS" %in% s$measures) s$bands$AS else NULL
     ed_bands$PS <- if ("PS" %in% s$measures) s$bands$PS else NULL
     ed_measures(s$measures)
@@ -1415,7 +1248,7 @@ server <- function(input, output, session) {
   
   ## mode-appropriate save control
   output$ed_saveui <- renderUI({
-    if (identical(APP_MODE, "local")) actionButton("ed_save", "Save")
+    if (identical(APP_MODE, "local")) actionButton("ed_save", "Save (Reload app to use in Visualiser tab)")
     else downloadButton("ed_download", "Download regime (.rds)")
   })
   
@@ -1423,12 +1256,11 @@ server <- function(input, output, session) {
   observeEvent(input$ed_save, {
     set <- tryCatch(ed_candidate(), error = function(e) { showNotification(conditionMessage(e), type="error"); NULL })
     if (is.null(set)) return()
-    if (set$id %in% names(sevsets_r()) && !isFALSE(sevsets_r()[[set$id]]$canonical)) {
+    if (set$id %in% names(store$sf_thresholds) && !isFALSE(store$sf_thresholds[[set$id]]$canonical)) {
       showNotification("id collides with a canonical regime; choose another id", type="error"); return() }
     save_user_sevset(set)
     authored(union(authored(), set$id))
-    refresh_store()
-    showNotification(paste0("saved '", set$id, "'"), type="message")
+    showNotification(paste0("saved '", set$id, "' \u2013Appears in the severity regime menu next launch"), type="message")
   })
   
   ## SERVER: download only, no disk write
@@ -1438,7 +1270,8 @@ server <- function(input, output, session) {
 
   ## ---- delete an AUTHORED regime (local mode only) -----------------
   ## Targets are overlay sets ONLY (canonical == FALSE). Built-in regimes
-  ## can never appear here, so they cannot be deleted. 
+  ## can never appear here, so they cannot be deleted. Takes effect on the
+  ## next launch (the overlay is re-read at startup), matching save.
   overlay_ids <- reactiveVal(character(0))
   refresh_overlay_ids <- function() {
     ids <- if (identical(APP_MODE,"local") && file.exists(SF_USER)) {
@@ -1485,7 +1318,7 @@ server <- function(input, output, session) {
     if (is.null(id) || !nzchar(id)) return()
     ## guard: never delete a canonical regime (should be impossible -- the
     ## menu lists overlay ids only -- but check the shipped store to be sure)
-    if (id %in% names(sevsets_r()) && !isFALSE(sevsets_r()[[id]]$canonical)) {
+    if (id %in% names(store$sf_thresholds) && !isFALSE(store$sf_thresholds[[id]]$canonical)) {
       showNotification("refusing: that is a built-in regime", type="error"); return() }
     ov <- tryCatch(readRDS(SF_USER), error=function(e) NULL)
     if (is.null(ov) || !id %in% names(ov$sf_thresholds)) {
@@ -1493,8 +1326,7 @@ server <- function(input, output, session) {
     ov$sf_thresholds[[id]] <- NULL
     saveRDS(ov, SF_USER)
     refresh_overlay_ids()
-    refresh_store()
-    showNotification(paste0("Deleted '", id, "'"), type="message")
+    showNotification(paste0("deleted '", id, "' \u2013Removed from the menu next launch"), type="message")
   })
   
   
@@ -1510,10 +1342,15 @@ server <- function(input, output, session) {
   ## Re-applying a condition's hit_spec to the CURRENT reference is a
   ## separate, later toggle -- see the session note.
 
+  observe({
+    updateSelectInput(session, "cond",
+                      choices = c("manual (sliders)" = "__manual__",
+                                  .labels_for(store$sf_conditions)))
+  })
 
   current_cond <- reactive({
     if (is.null(input$cond) || identical(input$cond, "__manual__")) NULL
-    else conds_r()[[input$cond]]
+    else read_condition(store, input$cond)
   })
 
   ## reference vectors in force on this tab
@@ -1521,8 +1358,8 @@ server <- function(input, output, session) {
     cc <- current_cond()
     if (is.null(cc)) return(list(qx = qx(), qv = qv(), src = NULL))
     rr <- attr(cc, "reference") %||% list()
-    tb <- tbls_r()[[rr$table %||% ""]]
-    nm <- norms_r()[[rr$norm  %||% ""]]
+    tb <- store$life_tables[[rr$table %||% ""]]
+    nm <- store$hrqol_norms[[rr$norm  %||% ""]]
     if (is.null(tb) || is.null(nm))
       return(list(qx = qx(), qv = qv(), src = NULL))
     list(qx = gv(tb, "a", "mu"), qv = gv(nm, "age", "hrqol"),
@@ -1534,14 +1371,14 @@ server <- function(input, output, session) {
     if (is.null(s))
       HTML(sprintf(paste0("Reference: life table <b>%s</b>; HRQoL norm <b>%s</b> ",
                           "(from the header selection)."),
-                   .obj_label(tbls_r(),  input$table),
-                   .obj_label(norms_r(), input$norm)))
+                   .id_label("life_tables", input$table),
+                   .id_label("hrqol_norms", input$norm)))
     else
       HTML(sprintf(paste0("Reference set by the loaded condition: life table <b>%s</b>; ",
                           "HRQoL norm <b>%s</b> \u2013 the header selection is overridden ",
                           "so the stored condition is shown exactly as authored."),
-                   .obj_label(tbls_r(), s$table),
-                   .obj_label(norms_r(), s$norm)))
+                   .id_label("life_tables", s$table),
+                   .id_label("hrqol_norms", s$norm)))
   })
 
   output$or_readout <- renderText(sprintf("OR = %.1f", LOG_BASE ^ input$or_log))
@@ -1575,7 +1412,7 @@ server <- function(input, output, session) {
       par(mfrow = c(1, 2))
       x0 <- build_stack(input$age, v$or_v, v$m_v, 0,        rf$qx, rf$qv, input$disc)
       xr <- build_stack(input$age, v$or_v, v$m_v, input$r,  rf$qx, rf$qv, input$disc)
-      draw_stack(x0, bands = TRUE, main = "undiscounted (\u03c1 = 0.0%)")
+      draw_stack(x0, bands = TRUE, main = "undiscounted (\u03c1 = 0)")
       draw_stack(xr, bands = TRUE, disc_view = TRUE,
                  main = sprintf("discounted (\u03c1 = %.1f%%)", 100 * input$r))
       par(mfrow = c(1, 1))
@@ -1613,51 +1450,40 @@ server <- function(input, output, session) {
         tags$div(tags$a(href = s$url, target = "_blank", s$cite %||% s$url))))
   })
 
-  ## ==== condition editor: knot state ================================
+  ## ==== Author condition: knot state ================================
   ## Knots are the RELATIVE description (an OR profile and an HRQoL scale),
   ## so they re-apply to any reference. The stored columns are absolute.
   ## Age 0 is pinned (OR 1 / scale 1) and TOP inherits the last knot, so
   ## only interior knots are user-editable and only they are stored.
   
+  default_ages <- function(n) if (n < 1) numeric(0) else
+    round(seq(0, TOP, length.out = n + 2))[-c(1, n + 2)]
   
   KN <- reactiveValues(
-    or = data.frame(age = 40, value = 2),
-    m  = data.frame(age = 40, value = 0.8),
-    or_active = 1L, m_active = 1L)
-
+    or = data.frame(age = default_ages(1), value = 3),
+    m  = data.frame(age = default_ages(1), value = 0.6),
+    or_active = 1L, m_active = 1L,
+    loading = FALSE)
   
-  ## Double-click toggles a knot. Within TOL years of an existing marker it
-  ## removes that one; otherwise it adds a knot AT THE CURRENT CURVE VALUE,
-  ## so the profile is unchanged by the addition -- you gain a control point,
-  ## not a new shape. Ages stay distinct: interp_knots drops duplicates, so a
-  ## knot landing on an occupied age would silently lose one.
-  KNOT_TOL <- 2                      # years; roughly the marker's own width
-  KNOT_MAX <- 20
-  
-  toggle_knot <- function(which, dbl, vec) {
-    if (is.null(dbl) || !is.finite(dbl$x)) return(invisible())
-    cur <- KN[[which]]; act <- paste0(which, "_active")
-    hit <- if (nrow(cur)) which(abs(cur$age - dbl$x) <= KNOT_TOL) else integer(0)
-    if (length(hit)) {                                   # remove the nearest
-      j <- hit[which.min(abs(cur$age[hit] - dbl$x))]
-      KN[[which]] <- cur[-j, , drop = FALSE]
-      KN[[act]]   <- max(1L, min(j, nrow(KN[[which]])))
-      return(invisible())
+  ## reshape the knot frame when the count changes, preserving what fits.
+  ## Suppressed while KN$loading is TRUE so a load cannot be clobbered by
+  ## the nk-observer firing on the updateNumericInput it triggers.
+  sync_count <- function(which, n, vdef) {
+    if (isTRUE(KN$loading)) return(invisible())
+    cur <- KN[[which]]
+    if (nrow(cur) == n) return(invisible())
+    ages <- default_ages(n); vals <- rep(vdef, n)
+    if (nrow(cur) > 0 && n > 0) {
+      k <- min(n, nrow(cur))
+      vals[seq_len(k)] <- cur$value[seq_len(k)]
+      ages[seq_len(k)] <- cur$age[seq_len(k)]
     }
-    a <- round(dbl$x)                                    # otherwise add
-    if (a < 1 || a > TOP - 1 || a %in% cur$age) return(invisible())
-    if (nrow(cur) >= KNOT_MAX) {
-      showNotification(sprintf("%s interior knots is the maximum", KNOT_MAX), type = "warning")
-      return(invisible())
-    }
-    new <- rbind(cur, data.frame(age = a, value = vec[a + 1]))
-    new <- new[order(new$age), , drop = FALSE]
-    KN[[which]] <- new
-    KN[[act]]   <- which(new$age == a)[1]
+    KN[[which]] <- if (n > 0) data.frame(age = ages, value = vals) else cur[0, ]
+    KN[[paste0(which, "_active")]] <-
+      if (n > 0) min(KN[[paste0(which, "_active")]], n) else 1L
   }
-  observeEvent(input$or_dbl, toggle_knot("or", input$or_dbl, or_vec()))
-  observeEvent(input$m_dbl,  toggle_knot("m",  input$m_dbl,  m_vec()))
-  
+  observeEvent(input$or_nk, sync_count("or", max(0, input$or_nk %||% 0), 3))
+  observeEvent(input$m_nk,  sync_count("m",  max(0, input$m_nk  %||% 0), 0.6))
   
   strip_anchors <- function(full) {
     if (is.null(full) || nrow(full) == 0)
@@ -1686,49 +1512,19 @@ server <- function(input, output, session) {
     cur <- KN[[which]]; if (is.null(click) || nrow(cur) == 0) return()
     KN[[paste0(which, "_active")]] <- which.min(abs(cur$age - click$x))
   }
-  
-  ## The active knot's age is bounded by its NEIGHBOURS, with age 0 and age
-  ## TOP acting as implicit knots either side. Neighbours are found by age
-  ## order, not row order -- KN$or is not kept sorted. The +1/-1 keeps ages
-  ## distinct: interp_knots drops duplicates, so two knots sharing an age
-  ## would silently lose one.
-  knot_bounds <- function(cur, i) {
-    if (nrow(cur) == 0 || i > nrow(cur)) return(c(1, TOP - 1))
-    a <- cur$age[i]; others <- cur$age[-i]
-    lo <- if (any(others < a)) max(others[others < a]) else 0
-    hi <- if (any(others > a)) min(others[others > a]) else TOP
-    if (lo + 1 > hi - 1) c(a, a) else c(lo + 1, hi - 1)
-  }
-  
-  ## Push the active knot to its two sliders. Called BOTH by the activation
-  ## observers and directly on load: assigning an unchanged value to
-  ## KN$*_active may not invalidate, so the observer cannot be relied on.
-  sync_sliders <- function(which) {
-    cur <- KN[[which]]; i <- KN[[paste0(which, "_active")]]
-    if (nrow(cur) == 0 || i > nrow(cur)) {
-      lab <- "(no knots \u2013 double-click the plot to add one)"
-      updateSliderInput(session, paste0(which, "_age"), label = lab)
-      return(invisible())
-    }
-    b <- knot_bounds(cur, i)
-    if (identical(which, "or"))
-      updateSliderInput(session, "or_slider",
-                        value = log(max(cur$value[i], 1), base = LOG_BASE))
-    else
-      updateSliderInput(session, "m_slider", value = cur$value[i])
-    updateSliderInput(session, paste0(which, "_age"),
-                      label = sprintf("Knot %d age", i),
-                      min = b[1], max = b[2], value = cur$age[i])
-  }
-  
-  
   observeEvent(input$or_click, activate("or", input$or_click))
   observeEvent(input$m_click,  activate("m",  input$m_click))
-
-  observeEvent(KN$or_active, sync_sliders("or"))
-  observeEvent(KN$m_active,  sync_sliders("m"))
   
-  
+  observeEvent(KN$or_active, {
+    cur <- KN$or; i <- KN$or_active
+    if (nrow(cur) >= i)
+      updateSliderInput(session, "or_slider",
+                        value = log(max(cur$value[i], 1), base = LOG_BASE))
+  })
+  observeEvent(KN$m_active, {
+    cur <- KN$m; i <- KN$m_active
+    if (nrow(cur) >= i) updateSliderInput(session, "m_slider", value = cur$value[i])
+  })
   observeEvent(input$or_slider, {
     cur <- KN$or; i <- KN$or_active
     if (nrow(cur) >= i) { cur$value[i] <- LOG_BASE ^ input$or_slider; KN$or <- cur }
@@ -1738,41 +1534,6 @@ server <- function(input, output, session) {
     if (nrow(cur) >= i) { cur$value[i] <- input$m_slider; KN$m <- cur }
   })
   
-  observeEvent(input$cond_reset,  {
-    KN$or <- data.frame(age = 40, value = 2)
-    KN$m  <- data.frame(age = 40, value = 0.8)
-    KN$or_active <- 1L
-    KN$m_active  <- 1L
-    sync_sliders("or"); sync_sliders("m")
-    updateSelectInput(session, "or_rule", selected = "constant")
-    updateSelectInput(session, "m_rule",  selected = "linear")
-    updateTextInput(session, "cond_label",   value = "New condition")
-    updateTextInput(session, "cond_id",      value = "new_condition")
-    updateTextInput(session, "cond_summary", value = "")
-    updateTextInput(session, "cond_cite",    value = "")
-    updateTextInput(session, "cond_url",     value = "")
-    output$edit_load_msg <- renderUI(NULL)
-    showNotification("Reset condition editor", type = "message")})
-  
-  
-  ## Neighbours may have moved, or knots been added/removed. Refresh the
-  ## bounds without touching the value. Keyed on the AGES alone, so dragging
-  ## a knot's VALUE does not churn this on every tick.
-  observeEvent(paste(KN$or$age, collapse = "|"), {
-    cur <- KN$or; i <- KN$or_active
-    if (nrow(cur) >= i) {
-      b <- knot_bounds(cur, i)
-      updateSliderInput(session, "or_age", min = b[1], max = b[2])
-    }
-  }, ignoreInit = TRUE)
-  observeEvent(paste(KN$m$age, collapse = "|"), {
-    cur <- KN$m; i <- KN$m_active
-    if (nrow(cur) >= i) {
-      b <- knot_bounds(cur, i)
-      updateSliderInput(session, "m_age", min = b[1], max = b[2])
-    }
-  }, ignoreInit = TRUE)
-  
   ## readouts show the knot in ABSOLUTE terms against the selected
   ## reference, so the author sees the implied soc value, not just the
   ## multiplier. They therefore track the header's norm/table.
@@ -1780,34 +1541,34 @@ server <- function(input, output, session) {
     cur <- KN$or; if (nrow(cur) == 0) return(NULL)
     i <- KN$or_active; age <- cur$age[i]; OR <- cur$value[i]
     qref <- qx()[age + 1]; qsoc <- or_hit(qref, OR)
-    div(style = sprintf("font-family:%s;font-size:12px;color:#555;margin-top:-8px;", FONT_BODY),
-        HTML(sprintf("OR <b>%.2f</b> at age <b>%d</b> \u2013 ref q = %.4f &rarr; soc q = <b>%.4f</b>",
-                     OR, age, qref, qsoc)))
+    div(style = "display:flex;gap:16px;align-items:center;",
+        div(numericInput("or_age", sprintf("Knot %d age", i), value = age,
+                         min = 1, max = TOP - 1, step = 1, width = "120px")),
+        div(style = sprintf("font-family:%s;font-size:12px;color:#555;", FONT_BODY),
+            HTML(sprintf("OR <b>%.2f</b> at age <b>%d</b><br>ref q = %.4f &rarr; soc q = <b>%.4f</b>",
+                         OR, age, qref, qsoc))))
   })
   output$m_age_ui <- renderUI({
     cur <- KN$m; if (nrow(cur) == 0) return(NULL)
     i <- KN$m_active; age <- cur$age[i]; sc <- cur$value[i]
     href <- qv()[age + 1]; hsoc <- href * sc
-    div(style = sprintf("font-family:%s;font-size:12px;color:#555;margin-top:-8px;", FONT_BODY),
-        HTML(sprintf("scale <b>%.2f</b> at age <b>%d</b> \u2013 ref hrqol = %.3f &rarr; soc hrqol = <b>%.3f</b>",
-                     sc, age, href, hsoc)))
+    div(style = "display:flex;gap:16px;align-items:center;",
+        div(numericInput("m_age", sprintf("Knot %d age", i), value = age,
+                         min = 1, max = TOP - 1, step = 1, width = "120px")),
+        div(style = sprintf("font-family:%s;font-size:12px;color:#555;", FONT_BODY),
+            HTML(sprintf("scale <b>%.2f</b> at age <b>%d</b><br>ref hrqol = %.3f &rarr; soc hrqol = <b>%.3f</b>",
+                         sc, age, href, hsoc))))
   })
   
-  ## Age write-back fires on the SETTLED value: dragging across 119
-  ## positions would otherwise rebuild the knot frame and redraw both
-  ## previews on every step. The bounds are the slider's own, so no clamp.
-  or_age_settled <- debounce(reactive(input$or_age), 250)
-  m_age_settled  <- debounce(reactive(input$m_age),  250)
-  
-  observeEvent(or_age_settled(), {
-    a <- or_age_settled(); cur <- KN$or; i <- KN$or_active
-    if (isTruthy(a) && nrow(cur) >= i && !identical(cur$age[i], a)) {
-      cur$age[i] <- a; KN$or <- cur }
+  observeEvent(input$or_age, {
+    a <- input$or_age; cur <- KN$or; i <- KN$or_active
+    if (isTruthy(a) && nrow(cur) >= i) {
+      cur$age[i] <- max(1, min(TOP - 1, a)); KN$or <- cur }
   })
-  observeEvent(m_age_settled(), {
-    a <- m_age_settled(); cur <- KN$m; i <- KN$m_active
-    if (isTruthy(a) && nrow(cur) >= i && !identical(cur$age[i], a)) {
-      cur$age[i] <- a; KN$m <- cur }
+  observeEvent(input$m_age, {
+    a <- input$m_age; cur <- KN$m; i <- KN$m_active
+    if (isTruthy(a) && nrow(cur) >= i) {
+      cur$age[i] <- max(1, min(TOP - 1, a)); KN$m <- cur }
   })
   
   ## ---- knot previews: induced survival and induced HRQoL
@@ -1864,12 +1625,17 @@ server <- function(input, output, session) {
   
   
   ## ---- load an existing condition back into the knot editor
+  observe({
+    updateSelectInput(session, "edit_load",
+                      choices = c("(none)" = "", .labels_for(store$sf_conditions)))
+  })
+  
   observeEvent(input$edit_load_go, {
     id <- input$edit_load
     if (is.null(id) || !nzchar(id)) { output$edit_load_msg <- renderUI(NULL); return() }
-    obj <- conds_r()[[id]]
+    obj <- read_condition(store, id)
     if (is.null(obj)) {
-      output$edit_load_msg <- renderUI(span(style = "color:#b00;", "Could not read condition!"))
+      output$edit_load_msg <- renderUI(span(style = "color:#b00;", "could not read condition"))
       return()
     }
     hs <- attr(obj, "hit_spec"); rr <- attr(obj, "reference") %||% list()
@@ -1897,13 +1663,14 @@ server <- function(input, output, session) {
     updateSelectInput(session, "or_rule", selected = hs$or_interp    %||% "constant")
     updateSelectInput(session, "m_rule",  selected = hs$hrqol_interp %||% "linear")
     
-    ## push the loaded knots, then sync the sliders explicitly: assigning an
-    ## unchanged value to KN$*_active may not invalidate, so the activation
-    ## observers cannot be relied on here.
-    KN$or <- or_int
-    KN$m  <- m_int
+    ## guard the reshape observer, release it after this flush
+    KN$loading <- TRUE
+    updateNumericInput(session, "or_nk", value = nrow(or_int))
+    updateNumericInput(session, "m_nk",  value = nrow(m_int))
+    KN$or <- if (nrow(or_int) > 0) or_int else KN$or[0, ]
+    KN$m  <- if (nrow(m_int)  > 0) m_int  else KN$m[0, ]
     KN$or_active <- 1L; KN$m_active <- 1L
-    sync_sliders("or"); sync_sliders("m")
+    session$onFlushed(function() KN$loading <- FALSE, once = TRUE)
     
     info <- attr(obj, "info") %||% list()
     srcs <- info$sources %||% list()
@@ -1924,7 +1691,8 @@ server <- function(input, output, session) {
   
   ## ---- delete an AUTHORED condition (local mode only) ---------------
   ## Targets are overlay conditions ONLY. Shipped conditions never appear
-  ## here, so they cannot be deleted from the app. 
+  ## here, so they cannot be deleted from the app. Takes effect on the next
+  ## launch (the overlay is re-read at startup), matching save.
   ##
   ## The write is a read-modify-write of the WHOLE overlay: sf_thresholds
   ## shares this file, and replacing rather than editing the object would
@@ -1952,7 +1720,7 @@ server <- function(input, output, session) {
       return(div(style = "margin-top:28px;font-size:12px;color:#888;",
                  em("(No authored condition(s) to delete)")))
     lab <- vapply(ids, function(i) {
-      o <- conds_r()[[i]]
+      o <- (store$sf_conditions %||% list())[[i]]
       if (is.null(o)) i else attr(o, "menu_label") %||% i
     }, "")
     selectInput("cond_del_id", "Delete condition",
@@ -1964,17 +1732,16 @@ server <- function(input, output, session) {
     if (is.null(id) || !nzchar(id)) return()
     ## guard: never delete a shipped condition. Should be unreachable --
     ## the menu lists overlay ids only -- but check the store to be sure.
-    if (id %in% names(conds_r()) &&
-        isTRUE(attr(conds_r()[[id]], "canonical"))) {
-      showNotification("Shipped condition cannot be deleted from the app", type = "error"); return() }
+    if (id %in% names(store$sf_conditions) &&
+        isTRUE(attr(store$sf_conditions[[id]], "canonical"))) {
+      showNotification("refusing: that is a shipped condition", type = "error"); return() }
     ov <- tryCatch(readRDS(SF_USER), error = function(e) NULL)
     if (is.null(ov) || !id %in% names(ov$sf_conditions)) {
-      showNotification("Not found in overlay", type = "warning"); return() }
+      showNotification("not found in overlay", type = "warning"); return() }
     ov$sf_conditions[[id]] <- NULL
     saveRDS(ov, SF_USER)
     refresh_cond_ids()
-    refresh_store()
-    showNotification(paste0("Deleted '", id, "'"),
+    showNotification(paste0("deleted '", id, "' \u2013 removed from the menus next launch"),
                      type = "message")
   })
   
@@ -2002,7 +1769,7 @@ server <- function(input, output, session) {
   
   output$cond_saveui <- renderUI({
     if (identical(APP_MODE, "local"))
-      actionButton("cond_save", "Save", class = "btn-primary")
+      actionButton("cond_save", "Save (appears next launch)", class = "btn-primary")
     else
       downloadButton("cond_download", "Download condition (.rds)")
   })
@@ -2017,8 +1784,8 @@ server <- function(input, output, session) {
                                          "A condition needs both an id and a menu label."))
       return()
     }
-    if (id %in% names(conds_r()) &&
-        isTRUE(attr(conds_r()[[id]], "canonical"))) {
+    if (id %in% names(store$sf_conditions) &&
+        isTRUE(attr(store$sf_conditions[[id]], "canonical"))) {
       output$export_msg <- renderUI(span(style = "color:#b00;",
                                          sprintf("'%s' is a built-in condition; choose another id.", id)))
       return()
@@ -2027,9 +1794,8 @@ server <- function(input, output, session) {
     if (is.null(ov$sf_conditions)) ov$sf_conditions <- list()
     ov$sf_conditions[[id]] <- cond_candidate()
     saveRDS(ov, SF_USER)
-    refresh_store()
     output$export_msg <- renderUI(span(style = "color:#060;",
-                                       sprintf("saved '%s' (%s).", id, lab)))
+                                       sprintf("saved '%s' (%s) \u2013 appears in the menus next launch.", id, lab)))
   })
   
   ## ==== Value potential =============================================
@@ -2054,7 +1820,7 @@ server <- function(input, output, session) {
       req(is.finite(t), t > 0)
       list(t = t,
            note = sprintf("Age %g \u2192 e(age) = %.1f yr, from %s.",
-                          input$vp_age, t, .obj_label(tbls_r(), input$table)))
+                          input$vp_age, t, .id_label("life_tables", input$table)))
     }
   })
   

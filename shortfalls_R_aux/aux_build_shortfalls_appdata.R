@@ -410,6 +410,23 @@ for (f in list.files(DIN, pattern = "\\.rds$", full.names = TRUE)) {
 }
 
 
+## 5c. UI help texts -- developer-maintained CSV, folded in as an
+## ATTRIBUTE (like defaults/builder), NOT a sublist: spec stays 2.0.0
+## and older app versions, which ignore unknown attributes, keep
+## reading the container unchanged. Keyed by the app's input ids; the
+## app shows a help mark only where an id resolves, so version skew
+## between app and container degrades to "no icon", never an error.
+## Text may carry simple HTML (<b>, &alpha; etc.); keep it ASCII.
+hf <- file.path(DIN, "ui_help.csv")
+if (file.exists(hf)) {
+  hd <- utils::read.csv(hf, stringsAsFactors = FALSE)
+  stopifnot(all(c("id", "title", "text") %in% names(hd)), !anyDuplicated(hd$id))
+  attr(store, "ui_help") <- setNames(
+    lapply(seq_len(nrow(hd)), function(i) list(title = hd$title[i], text = hd$text[i])),
+    hd$id)
+  cat("\nui_help: ", nrow(hd), " entries: ", paste(hd$id, collapse = ", "), "\n", sep = "")
+}
+
 ## =====================================================================
 ## 6. write + report
 ## =====================================================================

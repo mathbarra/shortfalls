@@ -1,0 +1,965 @@
+## premature_death_app.R  (0.10.0 BETA) ####
+## ---------------------------------------------------------------------#
+## Interactive AS/PS severity visualiser for the premature-death scenario.
+##
+## MODEL. Vantage = onset = age a. Patient is guaranteed W years' survival
+## (q = 0 on [a, a+W), q = 1 after), with HRQoL from the chosen norm.
+## x-axis = age at onset. Twin axes: absolute shortfall AS (left),
+## proportional shortfall PS (right). One remaining-survival W (slider),
+## one severity regime (single-select). Guide lines, tier colours, and the
+## severity ribbon are all generated FROM the chosen regime's bands, so
+## NICE (3 tiers), Norway (6 AS classes), and user-authored regimes all
+## render without special-casing.
+##
+## TRIPLET. Three independent single-selects -- severity regime (sevset),
+## HRQoL norm, life table -- form a triplet. Any combination renders:
+## this is a conditional visualiser, not an oracle ("IF this is it, THEN
+## this is the picture"). The compatibility badge CHARACTERISES the triplet
+## (green = reference pairing; amber = plausible/unverified; red = off-label
+## or user-edited) but NEVER blocks the plot.
+##
+## DISCOUNTING. Continuous e^(-rho t) by default; sub-year survival
+## discounted at its midpoint. Year-wise (1+rho)^(-t) is selectable but
+## understates sub-year shortfall. Applies to the with-condition stream;
+## the reference QALE is cached and recomputed only on norm/table/rho/mode.
+##
+## SEVERITY RIBBON. A strip below the x-axis showing, per age, the applied
+## weight and the decisive criterion (AS / PS / AS.PS) under the regime's
+## rule (max / min / mean / single). Colour maps to the applied weight;
+## text gives the number, so multi-tier regimes stay legible.
+##
+## THRESHOLD AUTHOR (tab). Fork an existing regime, edit its bands, choose
+## measures and (for two measures) a combining rule, and save. LOCAL mode
+## persists to pds_data/pds_data_user.rds (reappears next launch) and can
+## delete authored regimes; SERVER mode is session-only + download and
+## never writes to disk. Built-in regimes are immutable.
+##
+## DEPLOY CONTRACT. Runs given ONLY this file + pds_data/pds_data.rds.
+## Run-time accessors (read/validate/compatible) are inlined below; build-
+## time machinery (constructors, add_*, the container build script) lives
+## in pds_R_aux/ and never ships. Server safety comes from read-only deploy
+## permissions, not the APP_MODE flag.
+##
+## PARKED (see pds_vault/ notes): "compare with" two-line mode; warn-vs-
+## block validator split in the author tab; caption/reason-string polish.
+## =====================================================================#
+#options(shiny.fullstacktrace = TRUE)
+
+library(shiny)
+library(plotly)
+
+pal <- c(SPBlue='#002768', SPGreen='#64A620', SPRed='#EF2B2D', SPYellow='#FECA00',
+         SPPurple='#756FB9', SPBlueLight='#80A8D9', SPGreenLight='#64D292')
+
+FONT_BODY <- "Perpetua, 'Computer Modern Serif', Cambria, Georgia, serif"
+FONT_HEAD <- "'Gill Sans', 'Gill Sans MT', Calibri, 'Segoe UI', sans-serif"
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
+TOP <- 120                      # maximal age in life tables
+PDS <- "shortfalls_data/shortfalls_data.rds"  # the one shipped artefact
+PLOT_HEIGHT <- "680px"          # The height of the plot-part of the app
+
+
+## READ THIS BEFORE SERVER DEPLOYMENT!!!!####
+## Deployment mode. LOCAL: authored regimes persist to pds_data_user.rds
+## and reappear next launch. SERVER: session-only + download; never writes
+## to server disk. NOTE: the flag is INTENT, not security -- real server
+## safety comes from running the process with the app dir READ-ONLY to the
+## shiny user, so save cannot write regardless. See save handler.
+APP_MODE <- "local"   # "local" | "server"
+## DEPLOY (server): set APP_MODE <- "server" AND run the process with the
+## app directory + pds_data/ read-only to the shiny user. The flag stops
+## the app OFFERING to save; the permissions stop it BEING ABLE to. The
+## flag alone is not a security boundary.
+
+## =====================================================================#
+## INLINED RUN-TIME ACCESSORS  (read-side only; build-side stays in aux)
+## =====================================================================#
+
+## -- band lookup + applied weight (vectorised) ------------------------
+.band_weight <- function(x, band) {
+  i <- findInterval(x, band$lower); i[i < 1] <- NA_integer_; band$weight[i]
+}
+applied_weight <- function(AS = NULL, PS = NULL, set) {
+  w <- list()
+  if ("AS" %in% set$measures) w$AS <- .band_weight(AS, set$bands$AS)
+  if ("PS" %in% set$measures) w$PS <- .band_weight(PS, set$bands$PS)
+  switch(set$rule,
+         max  = do.call(pmax, c(w, list(na.rm = TRUE))),
+         min  = do.call(pmin, c(w, list(na.rm = TRUE))),
+         mean = Reduce(`+`, w) / length(w),
+         AS   = w$AS, PS = w$PS)
+}
+
+## -- interior guide lines for a measure, with a yellow->red tier ramp --
+## returns data.frame(at, tier, weight, colour); empty if <2 bands.
+guide_lines <- function(set, measure) {
+  b <- set$bands[[measure]]; n <- nrow(b)
+  if (n < 2) return(data.frame(at=numeric(0), tier=integer(0),
+                               weight=numeric(0), colour=character(0)))
+  ramp <- grDevices::colorRampPalette(c(pal[["SPYellow"]], pal[["SPRed"]]))(n - 1)
+  data.frame(at = b$lower[-1], tier = 2:n, weight = b$weight[-1],
+             colour = ramp, stringsAsFactors = FALSE)
+}
+
+## -- listing / lookup over the loaded store ---------------------------
+list_sevsets <- function(store, include_historical = FALSE) {
+  lst <- store$sf_thresholds
+  keep <- vapply(lst, function(s)
+    include_historical || (s$status %||% "current") %in% c("current","provisional"),
+    logical(1))
+  names(lst)[keep]
+}
+sevset_label  <- function(store, id) store$sf_thresholds[[id]]$label %||% id
+read_sevset   <- function(store, id) store$sf_thresholds[[id]]
+norm_ids      <- function(store) names(store$hrqol_norms)
+table_ids     <- function(store) names(store$life_tables)
+
+## display label for a container object: label -> menu_label -> id.
+## (norms and tables carry "label"; conditions inherit "menu_label" from
+## the pre-container app -- both are honoured so one helper serves all.)
+.labels_for <- function(objs) {
+  ids  <- names(objs)
+  labs <- vapply(ids, function(i) {
+    o <- objs[[i]]
+    attr(o, "label") %||% attr(o, "menu_label") %||% i
+  }, "")
+  stats::setNames(ids, labs)
+}
+
+## -- light integrity guard (NOT the full build-time validator) --------
+## The object was validated when built; here we only fail clearly on a
+## corrupt/stale/foreign file rather than deep downstream.
+load_pds <- function(path = PDS) {
+  if (!file.exists(path)) stop("pds_data.rds not found at: ", path, call. = FALSE)
+  store <- readRDS(path)
+  ok <- inherits(store, "shortfalls_data") &&
+    all(c("sf_thresholds","hrqol_norms","life_tables") %in% names(store)) &&
+    length(store$sf_thresholds) >= 1 &&
+    length(store$hrqol_norms)   >= 1 &&
+    length(store$life_tables)   >= 1
+  if (!ok) stop("file is not a well-formed pds_data container: ", path, call. = FALSE)
+  store
+}
+
+## -- compatibility: CHARACTERISE a triplet, never block ---------------
+## green  : sevset's reference_hint names exactly these norm/table ids,
+##          regions agree, override consistent with native discounting.
+## amber  : no hint, but regions/value coherent; plausible-unverified.
+## red    : region mismatch (tariff-vintage confound), user-forced object,
+##          off-diagonal pooled norm (mixed against a different table),
+##          or discount override contradicting the set's native practice.
+## Returns list(status, reasons).  norm_id/table_id are the chosen keys.
+compatible <- function(set, norm, ltbl, norm_id, table_id, override = NULL) {
+  ### NEVER RENAME <var> "status" or "reasons" without correcting bump's <var> <<- lines!!
+  status <- "green"; reasons <- character(0)
+  bump <- function(to, why) {
+    rank <- c(green=1L, amber=2L, red=3L)
+    if (rank[[to]] > rank[[status]]) status <<- to ## WARNING must be updated on renaming local variable status
+    reasons <<- c(reasons, why) ## WARNING must be updated on renaming local variable reasons
+  }
+  ### NEVER RENAME <var> "status" or "reasons" without correcting bump's <var> <<- lines!!
+  hint <- set$reference_hint %||% list()
+  hint_named <- length(hint) && !is.na(hint$norm %||% NA) && !is.na(hint$table %||% NA)
+  hint_met <- hint_named &&
+    identical(norm_id,  hint$norm) &&
+    identical(table_id, hint$table)
+  
+  nr <- attr(norm, "region"); tr <- attr(ltbl, "region"); sr <- set$region
+  
+  if (hint_met) {
+    ## consistent: skip region check (set region "England & Wales" is a
+    ## deliberate superset of the England-coverage reference data).
+  } else if (hint_named) {
+    bump("amber", sprintf("Not fully consistent: %s expects norm='%s', table='%s'",
+                          set$id, hint$norm, hint$table))
+  } else {
+    regs <- unique(stats::na.omit(c(sr, nr, tr)))
+    if (length(regs) > 1)
+      bump("red", sprintf("region mismatch (set=%s, norm=%s, table=%s); tariff vintage differs, measured AS not comparable",
+                          sr %||% "?", nr %||% "?", tr %||% "?"))
+    else bump("amber", "no reference_hint; pairing plausible but unverified")
+  }
+  
+  ## jurisdiction-agnostic references (e.g. full health, HRQoL = 1)
+  ANY_REGION <- c("any")
+  
+  ## cross-jurisdiction norm vs table (independent of the hint), UNLESS
+  ## either side is jurisdiction-agnostic ("any") -- then it's not a
+  ## confound, just an omnibus reference (amber, handled below).
+  if (!is.null(nr) && !is.null(tr) && !is.na(nr) && !is.na(tr) &&
+      !(nr %in% ANY_REGION) && !(tr %in% ANY_REGION) && !identical(nr, tr))
+    bump("red", sprintf("norm (%s) and life table (%s) are from different jurisdictions;
+                        a pooled norm was survivor-weighted against <em>its own</em> table's sex-mix, so this off-diagonal pairing is doubly conditional \u2013 re-pool upstream for a coherent analysis", nr, tr))
+  ## an "any" reference is usable but not a jurisdiction-matched pairing
+  if ((!is.null(nr) && nr %in% ANY_REGION) || (!is.null(tr) && tr %in% ANY_REGION))
+    bump("amber", "jurisdiction-agnostic reference in use (e.g. full health); omnibus, not a jurisdiction-matched pairing")
+  ## forced / non-canonical object
+  if (isFALSE(attr(norm, "canonical")) || isFALSE(attr(ltbl, "canonical")))
+    bump("red", "a forced (non-container) reference is in use; provenance not guaranteed")
+  
+  ## discount override contradicting the set's native practice
+  if (!is.null(override)) {
+    native <- isTRUE(set$discount_shortfall)
+    if (!identical(isTRUE(override), native))
+      bump("red", sprintf("discount-shortfall override (%s) contradicts %s's native practice (%s)",
+                          isTRUE(override), set$id, native))
+  }
+  list(status = status, reasons = reasons)
+}
+
+## Inlined BUILD-side machinery for the Threshold author tab. ####
+## KEEP IN SYNC with pds_R_aux/aux_sevset.R and aux_sevset_ext.R.
+## The app is self-contained (deploy = this file + pds_data.rds), so the
+## editor's construct/validate/write logic is duplicated here rather than
+## sourced. Read-side accessors are above; these are the write-side twins.
+
+STATUS_LEVELS <- c("current","provisional","superseded","deprecated")
+
+validate_sevset <- function(set) {
+  err <- function(...) stop(sprintf("Severity regime '%s': %s", set$id %||% "?", paste0(...)), call. = FALSE)
+  ## measures must be non-empty and match the bands present
+  if (!length(set$measures) || !all(set$measures %in% c("AS","PS")) || anyDuplicated(set$measures))
+    err("choose at least one measure (AS and/or PS)")
+  if (!setequal(names(set$bands), set$measures))
+    err("every chosen measure needs bands, and vice versa")
+  
+  ## rule must match the measure count:
+  ##   two measures  -> a combining rule (max/min/mean)
+  ##   one measure   -> that measure's own rule (AS or PS)
+  if (!set$rule %in% c("max","min","mean")) err("Rule must be max/min/mean")
+  if (length(set$measures) == 2) {
+    if (!set$rule %in% c("max","min","mean"))
+      err("With both AS and PS, a rule must be set for combining implied weights/multipliers (max/min/mean)")
+  }
+  # } else {  # exactly one measure
+  #   if (!identical(set$rule, set$measures))
+  #     err(sprintf("With one measure (%s), rule must be '%s'", set$measures, set$measures))
+  #}
+  if (set$rule %in% c("max","min","mean") && length(set$measures) < 1)
+    err("rule '", set$rule, "' requires at least one measure")
+  if (set$rule %in% c("AS","PS") && !identical(set$measures, set$rule))
+    err("rule '", set$rule, "' requires measures == '", set$rule, "'")
+  if (!set$weight_native %in% c("multiplier","ce_threshold")) err("weight_native invalid")
+  if (identical(set$weight_native,"ce_threshold") && !is.finite(set$ce_threshold))
+    err("ce_threshold must be finite when native")
+  if (isTRUE(set$discount_shortfall) && !is.finite(set$discount_rate))
+    err("discount_shortfall implies finite discount_rate")
+  neutral <- if (identical(set$weight_native,"multiplier")) 1 else set$ce_threshold
+  ok_exc  <- grepl("weight1-exception", set$provenance$notes %||% "", fixed = TRUE)
+  for (m in set$measures) {
+    b <- set$bands[[m]]
+    if (!all(c("lower","upper","weight") %in% names(b))) err(m, ": band needs lower/upper/weight")
+    if (!is.numeric(b$lower)||!is.numeric(b$upper)||!is.numeric(b$weight)) err(m, ": columns must be numeric")
+    if (nrow(b) < 1) err(m, ": band empty")
+    if (is.unsorted(b$lower, strictly = TRUE)) err(m, ": lower must strictly ascend")
+    if (any(b$upper[-nrow(b)] != b$lower[-1])) err(m, ": bands not contiguous")
+    if (b$lower[1] != 0) err(m, ": first lower must be 0")
+    if (m == "AS" && !is.infinite(b$upper[nrow(b)])) err("AS: last upper must be Inf")
+    if (m == "PS" && b$upper[nrow(b)] != 1) err("PS: last upper must be 1")
+    if (is.unsorted(b$weight)) err(m, ": weight must be non-decreasing")
+    if (m == "AS" && any(b$lower < 0)) err("AS: bands non-negative")
+    if (m == "PS" && (b$lower[1] < 0 || b$upper[nrow(b)] > 1)) err("PS: bands in [0,1]")
+    if (!isTRUE(all.equal(b$weight[1], neutral)) && !ok_exc)
+      err(m, ": first-tier weight must equal neutral (", neutral, ") unless documented")
+  }
+  if (!(set$status %||% "current") %in% STATUS_LEVELS) err("status invalid")
+  invisible(TRUE)
+}
+
+new_sevset_ui <- function(id, label, region, year, measures, rule, bands,
+                          weight_native, ce_threshold = NA_real_, currency = NA_character_,
+                          threshold_year = NA_integer_, discount_shortfall = FALSE,
+                          discount_rate = NA_real_, reference_hint = list(),
+                          derived_from = NA_character_, provenance = list()) {
+  set <- structure(list(
+    id = id, label = label, region = region, year = as.integer(year),
+    measures = measures, rule = rule, bands = bands,
+    weight_native = weight_native, ce_threshold = ce_threshold, currency = currency,
+    threshold_year = threshold_year, discount_shortfall = discount_shortfall,
+    discount_rate = discount_rate, status = "current", supersedes = NA_character_,
+    reference_hint = reference_hint, reference_spec = list(),
+    canonical = FALSE, derived_from = derived_from, provenance = provenance),
+    class = "sevset")
+  validate_sevset(set); set
+}
+
+## overlay path + non-overwriting write (never touches canonical pds_data.rds)
+PDS_USER <- "pds_data/pds_data_user.rds"
+fingerprint <- function(bands) paste(vapply(bands, function(b)
+  paste(b$lower, b$upper, b$weight, collapse=";"), ""), collapse="||")
+
+load_overlay <- function(path = PDS_USER)
+  if (file.exists(path)) readRDS(path) else list(sf_thresholds = list())
+
+save_user_sevset <- function(set, path = PDS_USER) {
+  ov <- load_overlay(path)
+  ov$sf_thresholds[[set$id]] <- set
+  saveRDS(ov, path)
+  invisible(set$id)
+}
+
+
+## =====================================================================#
+## LOAD THE CONTAINER ####
+## =====================================================================#
+store <- load_pds(PDS)
+## local mode: fold previously-authored regimes from the overlay into the
+## store so they appear in the Severity-thresholds menu. Canonical ids are
+## never overwritten (a user set that collided was refused at save time).
+## Server mode starts from a clean stack -- no overlay read.
+if (identical(APP_MODE, "local") && file.exists(PDS_USER)) {
+  ov <- tryCatch(readRDS(PDS_USER), error = function(e) NULL)
+  if (!is.null(ov) && length(ov$sf_thresholds))
+    for (id in names(ov$sf_thresholds))
+      if (!id %in% names(store$sf_thresholds))       # canonical wins on collision
+        store$sf_thresholds[[id]] <- ov$sf_thresholds[[id]]
+}
+DEF   <- attr(store, "defaults") %||%
+  list(sevset = list_sevsets(store)[1],
+       norm   = norm_ids(store)[1],
+       table  = table_ids(store)[1])
+
+## expand a stored (age,value) frame onto 0:TOP with flat tail extrapolation
+gv <- function(df, ac, vc) {
+  df <- as.data.frame(df); v <- numeric(TOP + 1); v[df[[ac]] + 1] <- df[[vc]]
+  last <- max(df[[ac]]); if (last < TOP) v[(last + 2):(TOP + 1)] <- df[[vc]][which.max(df[[ac]])]
+  v
+}
+
+## =====================================================================#
+## COMPUTE  (norm is now EXPLICIT, so a triplet is genuinely swappable) ####
+## ---------------------------------------------------------------------#
+## discounted quality-adjusted expectancy from age a, given a mortality
+## vector qmod (survival) and a norm vector qv (HRQoL), both on 0:TOP.
+## COMPUTE (cached reference; discrete or continuous discounting) ####
+## discount weight for time t (years from vantage), mode "cont"|"disc":
+##   cont: exp(-r t)   (continuous, DEFAULT)
+##   disc: (1+r)^(-t)  (geometric, year-wise -- legacy, "at your own peril")
+.disc_w <- function(t, r, mode) if (mode == "cont") exp(-r * t) else (1 + r)^(-t)
+
+## discounted quality-adjusted expectancy from age a, given mortality qmod
+## (survival) and HRQoL qv, both on 0:TOP. t = 0,1,2,... years from a.
+eq_from <- function(a, qmod, qv, r, mode) {
+  ages <- a:TOP
+  S <- c(1, cumprod(1 - qmod[a:(TOP)][-length(ages)]))
+  sum(S * qv[ages + 1] * .disc_w(0:(length(ages) - 1), r, mode))
+}
+
+## reference QALE Q(a) for every plotted age, in ONE pass. Depends only on
+## (qx, qv, r, mode) -- NOT on W or the sevset. This is the cached reference.
+ref_vec <- function(ages_plot, qx, qv, r, mode)
+  vapply(ages_plot, eq_from, 0, qmod = qx, qv = qv, r = r, mode = mode)
+
+## shortfall at age a, given the ALREADY-COMPUTED reference Q. Only the
+## with-condition arm s depends on W. Sub-year survived fraction is now
+## discounted at its midpoint (continuous) / (1+r)^(-W/2) (geometric),
+## instead of undiscounted -- removing the old conservative bias.
+sf_Q <- function(a, W, r, qx, qv, mode, Q) {
+  wholeW <- floor(W); frac <- W - wholeW
+  if (wholeW >= 1) {
+    qmod <- qx; idx <- 0:TOP
+    qmod[idx >= a & idx < a + wholeW] <- 0
+    qmod[idx >= a + wholeW] <- 1
+    s <- eq_from(a, qmod, qv, r, mode)
+    if (frac > 0 && a + wholeW <= TOP)
+      s <- s + frac * qv[a + wholeW + 1] * .disc_w(wholeW, r, mode)
+  } else {
+    ## W < 1: survive fraction W of the first year, discounted at midpoint
+    s <- frac * qv[a + 1] * .disc_w(W / 2, r, mode)
+  }
+  c(AS = Q - s, PS = (Q - s) / Q)
+}
+
+## first age where decreasing series y crosses thr (linear interp)
+cross_at <- function(ages, y, thr) {
+  below <- which(y < thr)
+  if (length(below) == 0 || below[1] == 1) return(NA_real_)
+  i <- below[1]; x0 <- ages[i-1]; x1 <- ages[i]; y0 <- y[i-1]; y1 <- y[i]
+  x0 + (thr - y0) * (x1 - x0) / (y1 - y0)
+}
+
+AGES  <- 1:90 ## age span plotted on x-axis
+LINE  <- pal[['SPBlue']]        # the single line (dark blue). Light blue reserved
+# for the future "compare with" second line.
+
+## ===================================================================== ##
+## UI User Interface ####
+ui <- fluidPage(
+  tags$head(tags$style(HTML(sprintf(
+    ".irs-bar,.irs-single{background:%s!important;border-color:%s!important}
+     .badge-green{color:%s} .badge-amber{color:%s} .badge-red{color:%s}
+     body{font-family:%s}
+     h1,h2,h3,.title{font-family:%s}
+     .control-label{font-family:%s}",
+    pal[['SPBlue']], pal[['SPBlue']],
+    pal[['SPGreen']], pal[['SPYellow']], pal[['SPRed']],
+    FONT_BODY, FONT_HEAD, FONT_HEAD)))),
+  titlePanel("Premature death AS and PS by age"),
+  tabsetPanel(
+    tabPanel("Visualiser",
+             br(),
+             fluidRow(
+               column(2, selectInput("sevset", "Severity Regime",
+                                     choices = stats::setNames(list_sevsets(store),
+                                                               vapply(list_sevsets(store),
+                                                                      function(id) sevset_label(store, id), "")),
+                                     selected = DEF$sevset)),
+               column(2, selectInput("norm", "HRQoL norm",
+                                     choices = .labels_for(store$hrqol_norms), selected = DEF$norm)),
+               column(2, selectInput("table", "Life table",
+                                     choices = .labels_for(store$life_tables), selected = DEF$table))
+             ),
+             fluidRow(
+               column(4, div(style="font-size:18px;margin-top:2px;", uiOutput("badge"))),
+               column(2, div(style="text-align:right;margin-top:6px;",
+                             checkboxInput("show_cross", "Crossing guides", value = FALSE))),
+               # column(2, div(style="text-align:right;margin-top:6px;",
+               #               textInput("plot_height", "Plot height", value = 680))) ## QWERTY
+             ),
+             fluidRow(
+               column(1, radioButtons("disc", "Discounting",
+                                      c("Continuous"="cont","Year-wise"="disc"), selected = "cont")),
+               column(5, sliderInput("r", "Discount rate \u03c1", min = 0, max = 0.10,
+                                     value = 0.035, step = 0.001, width = "100%")),
+               column(5,
+                      sliderInput("rs", "RS (remaining survival)", min = 0, max = 40,
+                                  value = 5, step = 1, width = "100%"),
+                      div(style=sprintf("font-family:%s;font-size:11px;color:#999;margin-top:-6px;", FONT_BODY),
+                          textOutput("rs_hint", inline = TRUE)))
+             ),
+             plotlyOutput("plot", height = "680px"),
+             div(style="color:#666;font-size:12px;margin-top:8px;",
+                 "Vantage = onset. Guaranteed W survival, then certain death; HRQoL = norm. ",
+                 "Solid = AS (left), dotted = PS (right). Guides drawn from the chosen regime's bands. ",
+                 "Continuous discounting e^(-\u03c1 t) by default; sub-year survival discounted at midpoint. ",
+                 "Year-wise (1+\u03c1)^(-t) available but understates sub-year shortfall. ",
+                 "Age axis from 1; y-axis rescales with \u03c1."),
+             div(style="color:#999;font-size:11px;margin-top:2px;", textOutput("src"))
+    ),
+    tabPanel("Threshold author",
+             br(),
+             fluidRow(
+               column(3,
+                      selectInput("ed_fork", "Start from",
+                                  choices = stats::setNames(list_sevsets(store, TRUE),
+                                                            vapply(list_sevsets(store, TRUE),
+                                                                   function(id) sevset_label(store, id), ""))),
+                      actionButton("ed_load", "Load into editor"),
+                      hr(),
+                      textInput("ed_id",    "New id (unique)", ""),
+                      textInput("ed_label", "Display label", ""),
+                      checkboxGroupInput("ed_meas", "Measures",
+                                         c("AS","PS"), selected = c("AS","PS"), inline = TRUE),
+                      uiOutput("ed_rule_ui"),
+                  
+                      selectInput("ed_wn", "Weight native", c("multiplier","ce_threshold")),
+                      hr(),
+                      uiOutput("ed_saveui"),         # Save (local) or Download (server)
+                      hr(),
+                      uiOutput("ed_delui")           # Delete authored regime (local only)
+               ),
+               column(9,
+                      h4("AS bands"), uiOutput("ed_AS_grid"),
+                      actionButton("ed_AS_add", "+ AS band"), actionButton("ed_AS_del", "- AS band"),
+                      hr(),
+                      h4("PS bands"), uiOutput("ed_PS_grid"),
+                      actionButton("ed_PS_add", "+ PS band"), actionButton("ed_PS_del", "- PS band"),
+                      hr(),
+                      div(style="font-family:monospace;font-size:12px;", uiOutput("ed_valid"))
+               )
+             )
+    )
+  )
+)
+## SERVER ####
+server <- function(input, output, session) {
+  
+  ## -- the chosen triplet -------------------------------------------##
+  set  <- reactive(read_sevset(store, input$sevset))
+  nmO  <- reactive(store$hrqol_norms[[input$norm]])
+  tbO  <- reactive(store$life_tables[[input$table]])
+  qx   <- reactive(gv(tbO(), "a",  "mu"))
+  qv   <- reactive(gv(nmO(), "age","hrqol"))
+  
+  ## cached reference QALE over plotted ages. Recomputes ONLY on
+  ## qx / qv / rho / discounting-mode -- NOT on W or sevset.
+  Qref <- reactive(ref_vec(AGES, qx(), qv(), input$r, input$disc))
+  
+  # # plot_height <- reactiveVal("plot_height")
+  # output$plot_height <- reactive({
+  #   ph <- input$plot_height
+  #   req(is.numeric(as.numeric(ph)) && ph >= 240)
+  #   ph
+  # })
+
+  
+  
+  ## Remaining survival slider####
+  ## unit state is authoritative; the slider value is read IN that unit.
+  rs_unit <- reactiveVal("yr")            # "yr" | "mo" | "da"
+  
+  
+  ## regime table: max, step, and the land-value when ENTERING each unit
+  .rs_regime <- list(
+    yr = list(min = 0, max = 40, step = 1,  land = 5,  lab = "RS (years)"),
+    mo = list(min = 1, max = 24, step = 1,  land = 12, lab = "RS (months)"),
+    da = list(min = 0, max = 90, step = 1,  land = 30, lab = "RS (days)"))
+  
+  .set_rs <- function(u, land = NULL) {
+    g <- .rs_regime[[u]]; rs_unit(u)
+    updateSliderInput(session, "rs", label = g$lab,
+                      min = g$min, max = g$max, step = g$step,
+                      value = if (is.null(land)) g$land else land)
+  }
+  
+  
+  ## downshift at value == 1 (zoom in); upshift with a dead band (zoom out)
+  ## at > 60 days and > 22 months, so the scale never flaps on the boundary.
+  observeEvent(input$rs, {
+    u <- isolate(rs_unit()); v <- input$rs
+    if (is.null(v)) return(invisible())
+    if (u == "yr" && v <= 1)              .set_rs("mo")
+    else if (u == "mo") {
+      if (v <= 1)                         .set_rs("da")
+      else if (v > 22)                    .set_rs("yr", land = 2)
+    } else if (u == "da" && v > 60)       .set_rs("mo", land = 3)
+  }, ignoreInit = TRUE)
+  
+
+  Wyears <- reactive({
+    v <- input$rs; u <- rs_unit()
+    if (is.null(v) || !is.finite(v)) return(NULL)
+    y <- switch(u, yr = v, mo = v/12, da = v/365.25)
+    if (!is.finite(y) || y <= 0) return(0.01)
+    y
+  })
+
+  wlab <- reactive({
+    v <- input$rs
+    switch(rs_unit(),
+           yr = sprintf("%g yr", v),
+           mo = sprintf("%g mo", v),
+           da = sprintf("%g da", v))
+  })
+  
+  wlab_long <- reactive({
+    v <- input$rs
+    u <- switch(rs_unit(),
+                yr = if (v == 1) "year"  else "years",
+                mo = if (v == 1) "month" else "months",
+                da = if (v == 1) "day"   else "days")
+    sprintf("%g %s", v, u)
+  })
+  
+  output$src <- renderText({
+    paste0("table: ", attr(tbO(),"source") %||% "user",
+           "  |  norm: ", attr(nmO(),"source") %||% "user",
+           "  |  regime: ", set()$label %||% set()$id)
+  })
+  
+  output$rs_hint <- renderText({
+    switch(rs_unit(),
+           yr = "drag to 1 to switch to months",
+           mo = "drag to 1 -> days;  above 22 -> years",
+           da = "above 60 -> months")
+  })
+  
+  ## -- compatibility badge (never blocks) --------------------------##
+  output$badge <- renderUI({
+    cmp <- compatible(set(), nmO(), tbO(), input$norm, input$table)
+    cls <- paste0("badge-", cmp$status)
+    dot <- c(green="\u25CF Fully consistent pairing",
+             amber="\u25B2 Pausible \u2013 unverified",
+             red  ="\u25B2 Experimental/Off-label")[[cmp$status]]
+    tagList(
+      span(class = cls, style="font-weight:600;", dot),
+      if (length(cmp$reasons))
+        span(style="color:#666;", HTML(paste0(" \u2013 ",
+                                              paste(cmp$reasons, collapse="; "))))
+    )
+  })
+  
+  
+  ## -- the plot: ONE horizon, ONE line, guides from the sevset ------##
+  output$plot <- renderPlotly({
+    r <- input$r; W <- Wyears(); s <- set()
+    if (is.null(W)) return(NULL)
+    qxv <- qx(); qvv <- qv()
+    
+    Qv <- Qref()
+    d <- t(vapply(seq_along(AGES), function(i)
+      sf_Q(AGES[i], W, r, qxv, qvv, input$disc, Qv[i]),
+      c(AS=0, PS=0)))
+    as_max <- max(26, ceiling(max(d[,'AS'], na.rm=TRUE) / 5) * 5)
+    
+    
+    
+    p <- plot_ly()
+    
+    
+    ## guide lines as SVG shapes (crisp; trace-rendering dashes them).
+    ## AS solid on y, PS dashed on y2. Collected into hshapes, merged with
+    ## the crossing vlines in the final layout().
+    gAS <- if ("AS" %in% s$measures) guide_lines(s, "AS") else data.frame()
+    gPS <- if ("PS" %in% s$measures) guide_lines(s, "PS") else data.frame()
+    
+    ## guide builders: pure functions returning lists of shapes / annotations
+    ## (no <<-; combined with c() below). AS solid, PS dashed; top tier heavy.
+    guide_shapes <- function(g, ax, dash) {
+      if (!nrow(g)) return(list())
+      lapply(seq_len(nrow(g)), function(k) {
+        wln <- if (g$tier[k] == max(g$tier)) 2.2 else 1.4
+        ln <- list(color = g$colour[k], width = wln)
+        if (!identical(dash, 'solid')) ln$dash <- dash   # omit dash when solid
+        list(type='line', xref='x', x0=min(AGES), x1=max(AGES),
+             yref=ax, y0=g$at[k], y1=g$at[k], line=ln, layer='above')
+      })
+    }
+    guide_anns <- function(g, ax, fmt, xside) {
+      if (!nrow(g)) return(list())
+      lapply(seq_len(nrow(g)), function(k)
+        list(x=if (xside=='left') min(AGES) else max(AGES), y=g$at[k], yref=ax,
+             xanchor=xside, yanchor='bottom', text=sprintf(fmt, g$at[k]),
+             showarrow=FALSE, font=list(family=FONT_BODY, size=11, color='#777')))
+    }
+    hshapes <- c(guide_shapes(gAS, 'y', 'solid'), guide_shapes(gPS, 'y2', 'dash'))
+    ann     <- c(guide_anns(gAS, 'y', 'AS %g', 'left'),
+                 guide_anns(gPS, 'y2', 'PS %g', 'right'))
+    
+    ## SEVERITY RIBBON ####
+    ## severity ribbon: colour = applied tier, along the age axis. 
+    ## A second visual guide to the severity verdict at each onset age.
+    ## Colour belongs to the TIER (pure fill, from the guide ramp).
+    ## Vertical delimiters + labels carry WHICH criterion is decisive
+    ## (AS / PS / AS.PS) -- labels shown only when that is non-constant.
+    ##
+    ## --- ribbon geometry (adjust freely; paper units, 0..1 = plot height) ---
+    RIB_Y     <- -0.07      # ribbon centre below the x-axis (0 = axis; more negative = lower)
+    RIB_H     <- -RIB_Y*0.2   # ribbon half-height (thickness)
+    RIB_DELIM <- pal[['SPBlue']]   # delimiter tick colour
+    RIB_LABEL <- TRUE     # draw AS / PS / AS.PS labels where informative
+    ## ----------------------------------------------------------------------##
+    
+    ## per-age tier per measure, the applied weight (rule-aware), and the
+    ## decisive criterion (meaning depends on the rule; see below).
+    tier_of <- function(x, band) { i <- findInterval(x, band$lower); i[i < 1] <- 1L; i }
+    tA <- if ("AS" %in% s$measures) tier_of(d[,'AS'], s$bands$AS) else rep(1L, nrow(d))
+    tP <- if ("PS" %in% s$measures) tier_of(d[,'PS'], s$bands$PS) else rep(1L, nrow(d))
+    
+    ## applied weight per age, via the SAME engine as the curves (rule-correct
+    ## for max/min/mean/AS/PS). This is what the ribbon labels and colours.
+    wvec <- applied_weight(d[,'AS'], d[,'PS'], s)
+    
+    ## decisive criterion, per rule:
+    ##   max  -> the measure achieving the max (AS/PS/AS.PS if tied)
+    ##   min  -> the measure achieving the min (the binding one)
+    ##   mean -> both contribute -> "AS.PS"
+    ##   AS/PS (single) -> that measure
+    rule <- s$rule
+    decisive <- if (rule == "mean") {
+      ifelse(wvec <= 1 + 1e-9, "none", "AS.PS")
+    } else if (rule %in% c("AS","PS")) {
+      ifelse(wvec <= 1 + 1e-9, "none", rule)
+    } else {  # max or min
+      aWt <- if ("AS" %in% s$measures) s$bands$AS$weight[tA] else rep(NA_real_, nrow(d))
+      pWt <- if ("PS" %in% s$measures) s$bands$PS$weight[tP] else rep(NA_real_, nrow(d))
+      ifelse(wvec <= 1 + 1e-9, "none",
+             ifelse(!is.na(aWt) & !is.na(pWt) & abs(aWt - pWt) < 1e-9, "AS.PS",
+                    ifelse(mapply(function(a,p) isTRUE(a == max(a,p,na.rm=TRUE)), aWt, pWt) &
+                             (rule=="max"), "AS",
+                           ifelse(rule=="max", "PS",
+                                  ifelse(mapply(function(a,p) isTRUE(a == min(a,p,na.rm=TRUE)), aWt, pWt), "AS", "PS")))))
+    }
+    
+    ## colour by the applied WEIGHT'S position in the weight range, so mean-
+    ## rule (interpolated weights) colours sensibly and max/min/single keep
+    ## their exact tier colours (where weight == a band weight).
+    allw <- sort(unique(unlist(lapply(s$bands, `[[`, "weight"))))
+    wmin <- min(allw); wmax <- max(allw)
+    ramp_res <- 64
+    ramp <- grDevices::colorRampPalette(c(pal[['SPYellow']], pal[['SPRed']]))(ramp_res)
+    wt_col <- function(w) {
+      if (is.na(w) || w <= 1 + 1e-9 || wmax <= wmin) return(NA_character_)  # neutral = blank
+      frac <- (w - wmin) / (wmax - wmin)
+      ramp[max(1L, min(ramp_res, round(frac * (ramp_res - 1)) + 1L))]
+    }
+    
+    ## run-length encode on (weight, decisive) -> contiguous segments
+    key <- paste(round(wvec, 4), decisive, sep = "|")
+    rl  <- rle(key); ends <- cumsum(rl$lengths); starts <- ends - rl$lengths + 1
+    show_labels <- RIB_LABEL # && length(unique(decisive[decisive != "none"])) > 1
+    
+    y0 <- RIB_Y - RIB_H; y1 <- RIB_Y + RIB_H
+    for (j in seq_along(rl$lengths)) {
+      i0 <- starts[j]; i1 <- ends[j]
+      wt  <- wvec[i0]; dec <- decisive[i0]
+      xa <- AGES[i0] - 0.5; xb <- AGES[i1] + 0.5            # cover the age cells
+      col <- wt_col(wt)
+      if (!is.na(col)) {                                    # weighted segment -> filled rect
+        hshapes[[length(hshapes)+1]] <- list(type='rect', xref='x', yref='paper',
+                                             x0=xa, x1=xb, y0=y0, y1=y1, fillcolor=col,
+                                             line=list(width=0), layer='above')
+        if (show_labels && dec != "none") {
+          lbl <- paste0(formatC(wt, format="f", digits=1),
+                        if (dec != "none") paste0(" \u00b7 ", sub("\\.", "\u00b7", dec)) else "")
+          ann[[length(ann)+1]] <- list(x=(xa+xb)/2, y=RIB_Y, xref='x', yref='paper',
+                                       text=lbl, showarrow=FALSE,
+                                       xanchor='center', yanchor='middle',
+                                       font=list(family=FONT_BODY, size=9, color='white'))
+        }
+      }
+    }
+    ## delimiters wherever the (tier, decisive) pair changes
+    for (j in seq_len(length(rl$lengths) - 1)) {
+      xd <- AGES[ends[j]] + 0.5
+      hshapes[[length(hshapes)+1]] <- list(type='line', xref='x', yref='paper',
+                                            x0=xd, x1=xd, y0=y0 - 0.006, y1=y1 + 0.006,
+                                            line=list(color=RIB_DELIM, width=1), layer='above')
+    }
+    
+    
+    lab <- wlab()
+    lab_l <- wlab_long()
+    if ("AS" %in% s$measures)
+      p <- add_trace(p, x=AGES, y=d[,'AS'], type='scatter', mode='lines',
+                     name=paste0('AS at ', lab_l, ' RS'),        # verbose legend
+                     line=list(color=LINE, width=3),
+                     hovertemplate=paste0('age %{x}<br>AS %{y:.1f}<extra>',lab,'</extra>'))  # terse hover
+    if ("PS" %in% s$measures)
+      p <- add_trace(p, x=AGES, y=d[,'PS'], type='scatter', mode='lines', yaxis='y2',
+                     name=paste0('PS at ', lab_l, ' RS'),        # verbose legend
+                     line=list(color=LINE, width=2, dash='dot'),
+                     hovertemplate=paste0('age %{x}<br>PS %{y:.0%}<extra>',lab,'</extra>'))  # terse hover
+    
+    ## crossing drop-lines: where each curve trips its own guides.
+    ## labelled '<age> (AS)' / '<age> (PS)' so overlapping crossings read.
+    ## crossing drop-lines: where each curve trips its own guides.
+    ## Carry the measure's style -- AS solid, PS dashed -- matching the
+    ## horizontal guides. Labelled '<age> (AS)' / '<age> (PS)'.
+    ## crossing builders: pure functions returning shapes + annotations for
+    ## the age where each curve trips its guides (no <<-; combined with c()).
+    vlines <- list()
+    if (isTRUE(input$show_cross)) {
+      cross_shapes <- function(g, ycol, dash) {
+        if (!nrow(g)) return(list())
+        out <- lapply(seq_len(nrow(g)), function(k) {
+          xa <- cross_at(AGES, d[, ycol], g$at[k])
+          if (is.na(xa)) return(NULL)
+          ln <- list(color = g$colour[k], width = 1)
+          if (!identical(dash, 'solid')) ln$dash <- dash
+          list(type='line', x0=xa, x1=xa, xref='x', y0=0, y1=1, yref='paper', line=ln)
+        })
+        Filter(Negate(is.null), out)
+      }
+      cross_anns <- function(g, ycol, tag) {
+        if (!nrow(g)) return(list())
+        out <- lapply(seq_len(nrow(g)), function(k) {
+          xa <- cross_at(AGES, d[, ycol], g$at[k])
+          if (is.na(xa)) return(NULL)
+          list(x=xa, y=1, yref='paper', xref='x', yanchor='bottom', xanchor='center',
+               text=sprintf('%.0f (%s)', xa, tag), showarrow=FALSE,
+               font=list(family=FONT_BODY, size=10, color=g$colour[k]))
+        })
+        Filter(Negate(is.null), out)
+      }
+      if ("AS" %in% s$measures) {
+        vlines <- c(vlines, cross_shapes(gAS, 'AS', 'solid'))
+        ann    <- c(ann,    cross_anns(gAS, 'AS', 'AS'))
+      }
+      if ("PS" %in% s$measures) {
+        vlines <- c(vlines, cross_shapes(gPS, 'PS', 'dash'))
+        ann    <- c(ann,    cross_anns(gPS, 'PS', 'PS'))
+      }
+    }
+    
+    show_ps <- "PS" %in% s$measures
+    p |> layout(
+      xaxis=list(title='Age at onset = Age of shortfall estimation', showgrid=FALSE, zeroline=FALSE),
+      yaxis=list(title='Absolute shortfall (QADLE)', range=c(0,as_max),
+                 gridcolor='#EEEEEE', zeroline=FALSE),
+      yaxis2=list(title=if (show_ps) 'Proportional shortfall' else '',
+                  overlaying='y', side='right', range=c(0,1),
+                  tickformat='.0%', showgrid=FALSE, zeroline=FALSE,
+                  visible=show_ps),
+      legend=list(orientation='h', x=0, y=1.08),
+      margin=list(r=70, b=110), font=list(family=FONT_HEAD, size=14),
+      shapes = c(hshapes, vlines), annotations = ann)
+  })
+
+  ## ==== Threshold author tab (server side) ====
+  ## ---- Threshold author tab ---------------------------####
+  ## editable band state, per measure. Each is a data.frame(lower,upper,weight).
+  ed_bands <- reactiveValues(AS = NULL, PS = NULL)
+  ed_measures <- reactiveVal(c("AS","PS"))
+  authored <- reactiveVal(character(0))   # ids saved this session (for live menu)
+  
+  ## load a chosen set's bands into the editor
+  observeEvent(input$ed_load, {
+    s <- read_sevset(store, input$ed_fork)
+    ed_bands$AS <- if ("AS" %in% s$measures) s$bands$AS else NULL
+    ed_bands$PS <- if ("PS" %in% s$measures) s$bands$PS else NULL
+    ed_measures(s$measures)
+    updateTextInput(session, "ed_id",    value = paste0(s$id, "_edit"))
+    updateTextInput(session, "ed_label", value = paste0(s$label %||% s$id, " (edited)"))
+    updateSelectInput(session, "ed_rule", selected = s$rule)
+    updateCheckboxGroupInput(session, "ed_meas", selected = s$measures)
+    updateSelectInput(session, "ed_wn",   selected = s$weight_native)
+  })
+  
+  ## render an editable numeric grid for one measure's bands
+  band_grid <- function(m) {
+    b <- ed_bands[[m]]; if (is.null(b)) return(div(em("(Measure not in this set)")))
+    rows <- lapply(seq_len(nrow(b)), function(k) fluidRow(
+      column(4, numericInput(paste0("ed_",m,"_lo_",k), if (k==1) "lower" else NULL, b$lower[k], step=0.01)),
+      column(4, numericInput(paste0("ed_",m,"_up_",k), if (k==1) "upper" else NULL, b$upper[k], step=0.01)),
+      column(4, numericInput(paste0("ed_",m,"_wt_",k), if (k==1) "weight" else NULL, b$weight[k], step=0.1))
+    ))
+    do.call(tagList, rows)
+  }
+  output$ed_AS_grid <- renderUI(band_grid("AS"))
+  output$ed_PS_grid <- renderUI(band_grid("PS"))
+  
+  ## read the grid back into the reactive band frames
+  read_grid <- function(m) {
+    b <- ed_bands[[m]]; if (is.null(b)) return(NULL)
+    n <- nrow(b)
+    df <- data.frame(
+      lower  = vapply(1:n, function(k) input[[paste0("ed_",m,"_lo_",k)]] %||% NA, 0),
+      upper  = vapply(1:n, function(k) input[[paste0("ed_",m,"_up_",k)]] %||% NA, 0),
+      weight = vapply(1:n, function(k) input[[paste0("ed_",m,"_wt_",k)]] %||% NA, 0))
+    if (m == "AS") df$upper[n] <- Inf          # AS top band is always open-ended
+    if (m == "PS") df$upper[n] <- 1            # PS top band is always exactly 1
+    df
+  }
+  
+  ## add / remove bands (append near top / drop last)
+  addband <- function(m) { b <- ed_bands[[m]] %||% data.frame(lower=0,upper=Inf,weight=1)
+  b <- read_grid(m) %||% b
+  ed_bands[[m]] <- rbind(b[1,,drop=FALSE], b)   # duplicate first row as a stub
+  }
+  delband <- function(m) { b <- read_grid(m); if (!is.null(b) && nrow(b) > 1) ed_bands[[m]] <- b[-nrow(b),,drop=FALSE] }
+  observeEvent(input$ed_AS_add, addband("AS")); observeEvent(input$ed_AS_del, delband("AS"))
+  observeEvent(input$ed_PS_add, addband("PS")); observeEvent(input$ed_PS_del, delband("PS"))
+  
+  ## build a candidate sevset from the current editor state (or an error)
+  ed_candidate <- reactive({
+    chosen <- input$ed_meas %||% character(0)
+    bands <- list()
+    if ("AS" %in% chosen && !is.null(ed_bands$AS) && nrow(ed_bands$AS) > 0) bands$AS <- read_grid("AS")
+    if ("PS" %in% chosen && !is.null(ed_bands$PS) && nrow(ed_bands$PS) > 0) bands$PS <- read_grid("PS")
+    #meas <- names(bands)
+    meas <- chosen
+    rule <- if (length(meas) == 2) (input$ed_rule %||% "max")
+    else if (length(meas) == 1) meas
+    else "max"
+    new_sevset_ui(
+      id = input$ed_id %||% "", label = input$ed_label %||% "",
+      region = "user", year = as.integer(format(Sys.Date(), "%Y")),
+      measures = meas, rule = input$ed_rule, bands = bands,
+      weight_native = input$ed_wn,
+      ce_threshold = if (identical(input$ed_wn,"ce_threshold")) bands[[meas[1]]]$weight[1] else NA_real_,
+      derived_from = sub("_edit$", "", input$ed_id %||% ""),
+      provenance = list(source = "user-authored", notes = "user-modified via Threshold author"))
+  })
+  
+  ## live validation readout
+  output$ed_valid <- renderUI({
+    res <- tryCatch({ ed_candidate(); "VALID  Can be saved" }, error = function(e) conditionMessage(e))
+    col <- if (grepl("^VALID", res)) pal[['SPGreen']] else pal[['SPRed']]
+    span(style=sprintf("color:%s;", col), res)
+  })
+  
+  ## mode-appropriate save control
+  output$ed_saveui <- renderUI({
+    if (identical(APP_MODE, "local")) actionButton("ed_save", "Save (Reload app to use in Visualiser tab)")
+    else downloadButton("ed_download", "Download regime (.rds)")
+  })
+  
+  ## LOCAL: persist to overlay (never touches canonical pds_data.rds)
+  observeEvent(input$ed_save, {
+    set <- tryCatch(ed_candidate(), error = function(e) { showNotification(conditionMessage(e), type="error"); NULL })
+    if (is.null(set)) return()
+    if (set$id %in% names(store$sf_thresholds) && !isFALSE(store$sf_thresholds[[set$id]]$canonical)) {
+      showNotification("id collides with a canonical regime; choose another id", type="error"); return() }
+    save_user_sevset(set)
+    authored(union(authored(), set$id))
+    showNotification(paste0("saved '", set$id, "' \u2013Appears in the severity regime menu next launch"), type="message")
+  })
+  
+  ## SERVER: download only, no disk write
+  output$ed_download <- downloadHandler(
+    filename = function() paste0(input$ed_id %||% "regime", ".rds"),
+    content  = function(file) saveRDS(tryCatch(ed_candidate(), error=function(e) NULL), file))
+
+  ## ---- delete an AUTHORED regime (local mode only) -----------------
+  ## Targets are overlay sets ONLY (canonical == FALSE). Built-in regimes
+  ## can never appear here, so they cannot be deleted. Takes effect on the
+  ## next launch (the overlay is re-read at startup), matching save.
+  overlay_ids <- reactiveVal(character(0))
+  refresh_overlay_ids <- function() {
+    ids <- if (identical(APP_MODE,"local") && file.exists(PDS_USER)) {
+      ov <- tryCatch(readRDS(PDS_USER), error=function(e) NULL)
+      if (!is.null(ov)) names(ov$sf_thresholds) else character(0)
+    } else character(0)
+    overlay_ids(ids)
+  }
+  refresh_overlay_ids()
+  
+  ## rule is a real choice only with BOTH measures; hidden for one/none.
+  output$ed_rule_ui <- renderUI({
+    if (length(input$ed_meas) == 2)
+      selectInput("ed_rule", "Rule (combine AS & PS)", c("max","min","mean"),
+                  selected = isolate(input$ed_rule) %||% "max")
+    else NULL
+  })
+  
+  output$ed_delui <- renderUI({
+    if (!identical(APP_MODE,"local")) return(NULL)   # no overlay to delete on a server
+    ids <- overlay_ids()
+    if (!length(ids)) return(div(em("(no authored regimes to delete)")))
+    tagList(
+      selectInput("ed_del_id", "Delete authored regime", choices = ids),
+      actionButton("ed_delete", "Delete", class = "btn-danger")
+    )
+  })
+  # To be implemented
+  observeEvent(input$ed_meas, {
+    chosen <- input$ed_meas %||% character(0)
+
+    for (m in c("AS", "PS")) {
+
+      if (m %in% chosen && is.null(ed_bands[[m]]))
+        ed_bands[[m]] <- data.frame(lower  = 0,upper  = Inf,weight = 1)
+
+      if (!(m %in% chosen))
+        ed_bands[[m]] <- NULL
+    }
+  })
+
+  observeEvent(input$ed_delete, {
+    id <- input$ed_del_id
+    if (is.null(id) || !nzchar(id)) return()
+    ## guard: never delete a canonical regime (should be impossible -- the
+    ## menu lists overlay ids only -- but check the shipped store to be sure)
+    if (id %in% names(store$sf_thresholds) && !isFALSE(store$sf_thresholds[[id]]$canonical)) {
+      showNotification("refusing: that is a built-in regime", type="error"); return() }
+    ov <- tryCatch(readRDS(PDS_USER), error=function(e) NULL)
+    if (is.null(ov) || !id %in% names(ov$sf_thresholds)) {
+      showNotification("not found in overlay", type="warning"); return() }
+    ov$sf_thresholds[[id]] <- NULL
+    saveRDS(ov, PDS_USER)
+    refresh_overlay_ids()
+    showNotification(paste0("deleted '", id, "' \u2013Removed from the menu next launch"), type="message")
+  })
+  
+  
+  
+
+}
+
+
+### Final CALL ####
+shinyApp(ui, server)
+
+
