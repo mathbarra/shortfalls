@@ -1,4 +1,5 @@
-## shortfalls_app.R  (0.99.3 DEV -- sf_Q death-year fix; else as 0.99.2) ####
+## shortfalls_app.R  (0.99.4 DEV -- text-editor tags only; functionality and GUI identical to 0.99.3) ####
+## 0.99.4: displayed strings wrapped in the identity helpers tx()/txm() so edit_app_info can edit them; no other change. (0.99.3: sf_Q death-year fix; else as 0.99.2)
 ## 0.99.2: Layout back to two options (Overlaid / Side-by-side); the
 ## discount-depiction SPLIT slider (value <-> time) is its own, always-
 ## visible control -- the two were orthogonal dimensions, not siblings.
@@ -57,6 +58,12 @@
 library(shiny)
 library(plotly)
 library(shinyWidgets)
+## ---- text-editor convention helpers (see edit_app_info/CONVENTION.md) ----
+## Identity functions: they return their argument unchanged. They exist only so that the separate
+## edit_app_info editor can find displayed text; they have no effect on the app.
+tx  <- function(x) x
+txm <- function(x) x                     # text carrying markup (<b>, <em>, ...), passed through unchanged
+## ---- end helpers ----
 
 
 pal <- c(SPBlue='#002768', SPGreen='#64A620', SPRed='#EF2B2D', SPYellow='#FECA00',
@@ -193,14 +200,14 @@ compatible <- function(set, norm, ltbl, norm_id, table_id, override = NULL) {
     ## consistent: skip region check (set region "England & Wales" is a
     ## deliberate superset of the England-coverage reference data).
   } else if (hint_named) {
-    bump("amber", sprintf("Not fully consistent: %s expects norm='%s', table='%s'",
+    bump("amber", sprintf(tx("Not fully consistent: %s expects norm='%s', table='%s'"),
                           set$id, hint$norm, hint$table))
   } else {
     regs <- unique(stats::na.omit(c(sr, nr, tr)))
     if (length(regs) > 1)
-      bump("red", sprintf("region mismatch (set=%s, norm=%s, table=%s); tariff vintage differs, measured AS not comparable",
+      bump("red", sprintf(tx("region mismatch (set=%s, norm=%s, table=%s); tariff vintage differs, measured AS not comparable"),
                           sr %||% "?", nr %||% "?", tr %||% "?"))
-    else bump("amber", "no reference_hint; pairing plausible but unverified")
+    else bump("amber", tx("no reference_hint; pairing plausible but unverified"))
   }
   
   ## jurisdiction-agnostic references (e.g. full health, HRQoL = 1)
@@ -211,20 +218,20 @@ compatible <- function(set, norm, ltbl, norm_id, table_id, override = NULL) {
   ## confound, just an omnibus reference (amber, handled below).
   if (!is.null(nr) && !is.null(tr) && !is.na(nr) && !is.na(tr) &&
       !(nr %in% ANY_REGION) && !(tr %in% ANY_REGION) && !identical(nr, tr))
-    bump("red", sprintf("norm (%s) and life table (%s) are from different jurisdictions;
-                        a pooled norm was survivor-weighted against <em>its own</em> table's sex-mix, so this off-diagonal pairing is doubly conditional \u2013 re-pool upstream for a coherent analysis", nr, tr))
+    bump("red", sprintf(txm("norm (%s) and life table (%s) are from different jurisdictions;
+                        a pooled norm was survivor-weighted against <em>its own</em> table's sex-mix, so this off-diagonal pairing is doubly conditional \u2013 re-pool upstream for a coherent analysis"), nr, tr))
   ## an "any" reference is usable but not a jurisdiction-matched pairing
   if ((!is.null(nr) && nr %in% ANY_REGION) || (!is.null(tr) && tr %in% ANY_REGION))
-    bump("amber", "jurisdiction-agnostic reference in use (e.g. full health); omnibus, not a jurisdiction-matched pairing")
+    bump("amber", tx("jurisdiction-agnostic reference in use (e.g. full health); omnibus, not a jurisdiction-matched pairing"))
   ## forced / non-canonical object
   if (isFALSE(attr(norm, "canonical")) || isFALSE(attr(ltbl, "canonical")))
-    bump("red", "a forced (non-container) reference is in use; provenance not guaranteed")
+    bump("red", tx("a forced (non-container) reference is in use; provenance not guaranteed"))
   
   ## discount override contradicting the set's native practice
   if (!is.null(override)) {
     native <- isTRUE(set$discount_shortfall)
     if (!identical(isTRUE(override), native))
-      bump("red", sprintf("discount-shortfall override (%s) contradicts %s's native practice (%s)",
+      bump("red", sprintf(tx("discount-shortfall override (%s) contradicts %s's native practice (%s)"),
                           isTRUE(override), set$id, native))
   }
   list(status = status, reasons = reasons)
@@ -239,53 +246,53 @@ compatible <- function(set, norm, ltbl, norm_id, table_id, override = NULL) {
 STATUS_LEVELS <- c("current","provisional","superseded","deprecated")
 
 validate_sevset <- function(set) {
-  err <- function(...) stop(sprintf("Severity regime '%s': %s", set$id %||% "?", paste0(...)), call. = FALSE)
+  err <- function(...) stop(sprintf(tx("Severity regime '%s': %s"), set$id %||% "?", paste0(...)), call. = FALSE)
   ## measures must be non-empty and match the bands present
   if (!length(set$measures) || !all(set$measures %in% c("AS","PS")) || anyDuplicated(set$measures))
-    err("choose at least one measure (AS and/or PS)")
+    err(tx("choose at least one measure (AS and/or PS)"))
   if (!setequal(names(set$bands), set$measures))
-    err("every chosen measure needs bands, and vice versa")
+    err(tx("every chosen measure needs bands, and vice versa"))
   
   ## rule must match the measure count:
   ##   two measures  -> a combining rule (max/min/mean)
   ##   one measure   -> that measure's own rule (AS or PS)
-  if (!set$rule %in% c("max","min","mean")) err("Rule must be max/min/mean")
+  if (!set$rule %in% c("max","min","mean")) err(tx("Rule must be max/min/mean"))
   if (length(set$measures) == 2) {
     if (!set$rule %in% c("max","min","mean"))
-      err("With both AS and PS, a rule must be set for combining implied weights/multipliers (max/min/mean)")
+      err(tx("With both AS and PS, a rule must be set for combining implied weights/multipliers (max/min/mean)"))
   }
   # } else {  # exactly one measure
   #   if (!identical(set$rule, set$measures))
   #     err(sprintf("With one measure (%s), rule must be '%s'", set$measures, set$measures))
   #}
   if (set$rule %in% c("max","min","mean") && length(set$measures) < 1)
-    err("rule '", set$rule, "' requires at least one measure")
+    err(tx("rule '"), set$rule, tx("' requires at least one measure"))
   if (set$rule %in% c("AS","PS") && !identical(set$measures, set$rule))
-    err("rule '", set$rule, "' requires measures == '", set$rule, "'")
-  if (!set$weight_native %in% c("multiplier","ce_threshold")) err("weight_native invalid")
+    err(tx("rule '"), set$rule, tx("' requires measures == '"), set$rule, "'")
+  if (!set$weight_native %in% c("multiplier","ce_threshold")) err(tx("weight_native invalid"))
   if (identical(set$weight_native,"ce_threshold") && !is.finite(set$ce_threshold))
-    err("ce_threshold must be finite when native")
+    err(tx("ce_threshold must be finite when native"))
   if (isTRUE(set$discount_shortfall) && !is.finite(set$discount_rate))
-    err("discount_shortfall implies finite discount_rate")
+    err(tx("discount_shortfall implies finite discount_rate"))
   neutral <- if (identical(set$weight_native,"multiplier")) 1 else set$ce_threshold
   ok_exc  <- grepl("weight1-exception", set$provenance$notes %||% "", fixed = TRUE)
   for (m in set$measures) {
     b <- set$bands[[m]]
-    if (!all(c("lower","upper","weight") %in% names(b))) err(m, ": band needs lower/upper/weight")
-    if (!is.numeric(b$lower)||!is.numeric(b$upper)||!is.numeric(b$weight)) err(m, ": columns must be numeric")
-    if (nrow(b) < 1) err(m, ": band empty")
-    if (is.unsorted(b$lower, strictly = TRUE)) err(m, ": lower must strictly ascend")
-    if (any(b$upper[-nrow(b)] != b$lower[-1])) err(m, ": bands not contiguous")
-    if (b$lower[1] != 0) err(m, ": first lower must be 0")
-    if (m == "AS" && !is.infinite(b$upper[nrow(b)])) err("AS: last upper must be Inf")
-    if (m == "PS" && b$upper[nrow(b)] != 1) err("PS: last upper must be 1")
-    if (is.unsorted(b$weight)) err(m, ": weight must be non-decreasing")
-    if (m == "AS" && any(b$lower < 0)) err("AS: bands non-negative")
-    if (m == "PS" && (b$lower[1] < 0 || b$upper[nrow(b)] > 1)) err("PS: bands in [0,1]")
+    if (!all(c("lower","upper","weight") %in% names(b))) err(m, tx(": band needs lower/upper/weight"))
+    if (!is.numeric(b$lower)||!is.numeric(b$upper)||!is.numeric(b$weight)) err(m, tx(": columns must be numeric"))
+    if (nrow(b) < 1) err(m, tx(": band empty"))
+    if (is.unsorted(b$lower, strictly = TRUE)) err(m, tx(": lower must strictly ascend"))
+    if (any(b$upper[-nrow(b)] != b$lower[-1])) err(m, tx(": bands not contiguous"))
+    if (b$lower[1] != 0) err(m, tx(": first lower must be 0"))
+    if (m == "AS" && !is.infinite(b$upper[nrow(b)])) err(tx("AS: last upper must be Inf"))
+    if (m == "PS" && b$upper[nrow(b)] != 1) err(tx("PS: last upper must be 1"))
+    if (is.unsorted(b$weight)) err(m, tx(": weight must be non-decreasing"))
+    if (m == "AS" && any(b$lower < 0)) err(tx("AS: bands non-negative"))
+    if (m == "PS" && (b$lower[1] < 0 || b$upper[nrow(b)] > 1)) err(tx("PS: bands in [0,1]"))
     if (!isTRUE(all.equal(b$weight[1], neutral)) && !ok_exc)
-      err(m, ": first-tier weight must equal neutral (", neutral, ") unless documented")
+      err(m, tx(": first-tier weight must equal neutral ("), neutral, tx(") unless documented"))
   }
-  if (!(set$status %||% "current") %in% STATUS_LEVELS) err("status invalid")
+  if (!(set$status %||% "current") %in% STATUS_LEVELS) err(tx("status invalid"))
   invisible(TRUE)
 }
 
@@ -569,7 +576,7 @@ draw_stack <- function(x, bands = TRUE, main = "", disc_view = FALSE,
   }
   lines(j, Sref, col = STROKE$surv, lwd = 1.5)
   at <- seq(0, K, by = 10); axis(1, at = at, labels = x$a + at)
-  mtext("age  (vantage a + t)", side = 1, line = 2.3, col = "#666", cex = 0.9)
+  mtext(tx("age  (vantage a + t)"), side = 1, line = 2.3, col = "#666", cex = 0.9)
 }
 
 ## PV-TIME VIEW (prototype 2026-09-15). ####
@@ -626,14 +633,14 @@ draw_stack_pv <- function(x, mode, split = 1, main = "") {
   axis(1, at = .pv_tau(at, r, split, mode), labels = x$a + at)
   if (is.finite(wall) && wall <= xmax) {
     abline(v = wall, lty = 2, col = "#888")
-    text(wall, ytop * 0.97, "all of eternity ends here", srt = 90,
+    text(wall, ytop * 0.97, tx("all of eternity ends here"), srt = 90,
          adj = c(1, -0.4), col = "#888", cex = 0.8, family = "serif")
   } else if (is.finite(wall)) {
-    text(xmax, ytop * 0.99, sprintf("eternity ends at %.0f PV-yr →", wall),
+    text(xmax, ytop * 0.99, sprintf(tx("eternity ends at %.0f PV-yr →"), wall),
          adj = c(1, 0), col = "#999", cex = 0.75, family = "serif")
   }
   mtext(sprintf(
-    "age, on a present-value axis (split %d%%): areas = discounted quantities",
+    tx("age, on a present-value axis (split %d%%): areas = discounted quantities"),
     round(100 * split)),
     side = 1, line = 2.3, col = "#666", cex = 0.9)
 }
@@ -687,17 +694,17 @@ compare_table <- function(x, header, set, regime_label = NULL) {
   rowlab <- function(v) tags$td(style = "text-align:left;padding:5px 16px;color:#555;", v)
   w0 <- applied_weight(x$AS,   x$PS,   set)
   wd <- applied_weight(x$AS_d, x$PS_d, set)
-  wlab <- paste0(regime_label %||% (set$label %||% set$id), " weight")
+  wlab <- paste0(regime_label %||% (set$label %||% set$id), tx(" weight"))
   tags$table(style = "border-collapse:collapse;margin:10px 0 16px;font-size:16px;",
-    tags$thead(tags$tr(hd(header), hd("undiscounted"),
-                       hd(sprintf("discounted (\u03c1 = %.1f%%)", 100 * x$r)))),
+    tags$thead(tags$tr(hd(header), hd(tx("undiscounted")),
+                       hd(sprintf(tx("discounted (\u03c1 = %.1f%%)"), 100 * x$r)))),
     tags$tbody(
-      tags$tr(rowlab("reference QALE"), cell(sprintf("%.1f", x$QALEref)), cell(sprintf("%.1f", x$QALEref_d))),
-      tags$tr(rowlab("condition QALE"), cell(sprintf("%.1f", x$QALEc)),   cell(sprintf("%.1f", x$QALEc_d))),
+      tags$tr(rowlab(tx("reference QALE")), cell(sprintf("%.1f", x$QALEref)), cell(sprintf("%.1f", x$QALEref_d))),
+      tags$tr(rowlab(tx("condition QALE")), cell(sprintf("%.1f", x$QALEc)),   cell(sprintf("%.1f", x$QALEc_d))),
       tags$tr(style = "border-top:1px solid #ddd;",
-              rowlab(tags$b("absolute shortfall (AS)")),
+              rowlab(tags$b(tx("absolute shortfall (AS)"))),
               cell(tags$b(sprintf("%.1f", x$AS))), cell(tags$b(sprintf("%.1f", x$AS_d)))),
-      tags$tr(rowlab(tags$b("proportional shortfall (PS)")),
+      tags$tr(rowlab(tags$b(tx("proportional shortfall (PS)"))),
               cell(tags$b(sprintf("%.0f%%", 100 * x$PS))), cell(tags$b(sprintf("%.0f%%", 100 * x$PS_d)))),
       tags$tr(style = "border-top:1px solid #ddd;",
               rowlab(wlab), cell(sprintf("%.1f", w0)), cell(sprintf("%.1f", wd)))))
@@ -715,50 +722,50 @@ ui <- fluidPage(
     pal[['SPBlue']], pal[['SPBlue']],
     pal[['SPGreen']], pal[['SPYellow']], pal[['SPRed']],
     FONT_BODY, FONT_HEAD, FONT_HEAD)))),
-  titlePanel("Shortfall and severity explorer"),
+  titlePanel(tx("Shortfall and severity explorer")),
 
   ## SHARED HEADER: the triplet and its badge govern EVERY tab. Choose a
   ## regime / norm / table once; the visualiser, the condition explorer
   ## and both authoring tabs all read the same selection.
   fluidRow(
-    column(3, selectInput("sevset", tagList("Severity Regime", help_mark("sevset")),
+    column(3, selectInput("sevset", tagList(tx("Severity Regime"), help_mark("sevset")),
                           choices = stats::setNames(list_sevsets(store),
                                                     vapply(list_sevsets(store),
                                                            function(id) sevset_label(store, id), "")),
                           selected = DEF$sevset)),
-    column(3, selectInput("norm", tagList("HRQoL norm", help_mark("norm")),
+    column(3, selectInput("norm", tagList(tx("HRQoL norm"), help_mark("norm")),
                           choices = .labels_for(store$hrqol_norms), selected = DEF$norm)),
-    column(3, selectInput("table", tagList("Life table", help_mark("table")),
+    column(3, selectInput("table", tagList(tx("Life table"), help_mark("table")),
                           choices = .labels_for(store$life_tables), selected = DEF$table)),
     column(1,
-           tags$label("Condition as", tags$br(), "reference",
+           tags$label(tx("Condition as"), tags$br(), tx("reference"),
                       help_mark("use_cond_ref"), class = "control-label"),
-           div(title = "Enable the use of life tables and HRQoL from conditions as shortfall reference.
-               Can be used to explore excess shortfall from co-morbidities.",
+           div(title = tx("Enable the use of life tables and HRQoL from conditions as shortfall reference.
+               Can be used to explore excess shortfall from co-morbidities."),
                materialSwitch("use_cond_ref", label = NULL, value = FALSE,
                               status = "danger"))
     ),
     column(1, div(style = "margin-top:25px;",
-                  actionButton("reload", "Refresh", title =
-                                 "Re-read authored regimes and conditions from disk")))
+                  actionButton("reload", tx("Refresh"), title =
+                                 tx("Re-read authored regimes and conditions from disk"))))
   ),
   
   fluidRow(
-    column(4, sliderInput("r", tagList("Discount rate \u03c1", help_mark("r")),
+    column(4, sliderInput("r", tagList(tx("Discount rate \u03c1"), help_mark("r")),
                           min = 0, max = 0.10,
                           value = 0.035, step = 0.001, width = "100%")),
     column(2, sliderInput("pv_split",
-                          tagList("discounting drawn on: value \u2194 time",
+                          tagList(tx("discounting drawn on: value \u2194 time"),
                                   help_mark("pv_split")),
                           min = 0, max = 100, value = 0, step = 5, post = "%")),
     column(2,
-           radioGroupButtons("disc", tagList("Discounting", help_mark("disc")),
+           radioGroupButtons("disc", tagList(tx("Discounting"), help_mark("disc")),
                              c("Continuous" = "cont", "Year-wise" = "disc"),
                              selected = "cont", size = "sm")),
-    column(2, numericInput("r_max", tagList("\u03c1 slider max", help_mark("r_max")),
+    column(2, numericInput("r_max", tagList(tx("\u03c1 slider max"), help_mark("r_max")),
                            value = 0.10, min = 0.01, max = 1, step = 0.01)),
     column(1,
-           tags$label("Allow \u03c1 < 0", help_mark("r_neg"), class = "control-label"),
+           tags$label(tx("Allow \u03c1 < 0"), help_mark("r_neg"), class = "control-label"),
            div(materialSwitch("r_neg", label = NULL, value = FALSE,
                               status = "warning")))
   ),
@@ -772,59 +779,59 @@ ui <- fluidPage(
   ),
 
   tabsetPanel(
-    tabPanel("Severity regime explorer",
+    tabPanel(tx("Severity regime explorer"),
              br(),
-             fluidRow(column(3,h3('Severity regime explorer'))),
+             fluidRow(column(3,h3(tx('Severity regime explorer')))),
              fluidRow(
                column(6,
-                      sliderInput("rs", tagList("RS (remaining survival)", help_mark("rs")),
+                      sliderInput("rs", tagList(tx("RS (remaining survival)"), help_mark("rs")),
                                   min = 0, max = 40,
                                   value = 5, step = 1, width = "100%"),
                       div(style=sprintf("font-family:%s;font-size:11px;color:#999;margin-top:-6px;", FONT_BODY),
                           textOutput("rs_hint", inline = TRUE))),
                column(1,
-                      tags$label("Crossing guides", help_mark("show_cross"),
+                      tags$label(tx("Crossing guides"), help_mark("show_cross"),
                                  class = "control-label"),
                       div(materialSwitch("show_cross", label = NULL, value = FALSE,
                                          status = "success")))),
              plotlyOutput("plot", height = "680px"),
              div(style="color:#666;font-size:12px;margin-top:8px;",
-                 "Vantage = onset. Guaranteed W survival, then certain death; HRQoL = norm. ",
-                 "Solid = AS (left), dotted = PS (right). Guides drawn from the chosen regime's bands. ",
-                 "Continuous discounting e^(-\u03c1 t) by default; sub-year survival discounted at midpoint. ",
-                 "Year-wise (1+\u03c1)^(-t) available but understates sub-year shortfall. ",
-                 "Age axis from 1; y-axis rescales with \u03c1."),
+                 tx("Vantage = onset. Guaranteed W survival, then certain death; HRQoL = norm. "),
+                 tx("Solid = AS (left), dotted = PS (right). Guides drawn from the chosen regime's bands. "),
+                 tx("Continuous discounting e^(-\u03c1 t) by default; sub-year survival discounted at midpoint. "),
+                 tx("Year-wise (1+\u03c1)^(-t) available but understates sub-year shortfall. "),
+                 tx("Age axis from 1; y-axis rescales with \u03c1.")),
              div(style="color:#999;font-size:11px;margin-top:2px;", textOutput("src"))
     ),
-    tabPanel("Severity regime editor",
+    tabPanel(tx("Severity regime editor"),
              br(),
-             fluidRow(column(6,h3('Severity regime editor'))),
+             fluidRow(column(6,h3(tx('Severity regime editor')))),
              fluidRow(
                column(3,
-                      selectInput("ed_fork", "Start from",
+                      selectInput("ed_fork", tx("Start from"),
                                   choices = stats::setNames(list_sevsets(store, TRUE),
                                                             vapply(list_sevsets(store, TRUE),
                                                                    function(id) sevset_label(store, id), ""))),
-                      actionButton("ed_load", "Load into editor"),
+                      actionButton("ed_load", tx("Load into editor")),
                       hr(),
-                      textInput("ed_id",    "New id (unique)", ""),
-                      textInput("ed_label", "Display label", ""),
-                      checkboxGroupInput("ed_meas", "Measures",
+                      textInput("ed_id",    tx("New id (unique)"), ""),
+                      textInput("ed_label", tx("Display label"), ""),
+                      checkboxGroupInput("ed_meas", tx("Measures"),
                                          c("AS","PS"), selected = c("AS","PS"), inline = TRUE),
                       uiOutput("ed_rule_ui"),
                   
-                      selectInput("ed_wn", "Weight native", c("multiplier","ce_threshold")),
+                      selectInput("ed_wn", tx("Weight native"), c("multiplier","ce_threshold")),
                       hr(),
                       uiOutput("ed_saveui"),         # Save (local) or Download (server)
                       hr(),
                       uiOutput("ed_delui")           # Delete severity regime (user-authored only)
                ),
                column(9,
-                      h4("AS bands"), uiOutput("ed_AS_grid"),
-                      actionButton("ed_AS_add", "+ AS band"), actionButton("ed_AS_del", "- AS band"),
+                      h4(tx("AS bands")), uiOutput("ed_AS_grid"),
+                      actionButton("ed_AS_add", tx("+ AS band")), actionButton("ed_AS_del", tx("- AS band")),
                       hr(),
-                      h4("PS bands"), uiOutput("ed_PS_grid"),
-                      actionButton("ed_PS_add", "+ PS band"), actionButton("ed_PS_del", "- PS band"),
+                      h4(tx("PS bands")), uiOutput("ed_PS_grid"),
+                      actionButton("ed_PS_add", tx("+ PS band")), actionButton("ed_PS_del", tx("- PS band")),
                       hr(),
                       div(style="font-family:monospace;font-size:12px;", uiOutput("ed_valid"))
                )
@@ -832,30 +839,30 @@ ui <- fluidPage(
     ),
 
     ## ---- Condition explorer -----------------------------------------
-    tabPanel("Condition explorer",
+    tabPanel(tx("Condition explorer"),
              br(),
-             fluidRow(column(6,h3('Condition explorer'))),
+             fluidRow(column(6,h3(tx('Condition explorer')))),
              fluidRow(
-               column(4, selectInput("cond", tagList("Condition", help_mark("cond")),
+               column(4, selectInput("cond", tagList(tx("Condition"), help_mark("cond")),
                                      choices = c("manual (sliders)" = "__manual__"),
                                      selected = "__manual__")),
                column(2,
-                      radioGroupButtons("view", tagList("Layout", help_mark("view")),
+                      radioGroupButtons("view", tagList(tx("Layout"), help_mark("view")),
                                         c("Overlaid" = "ov", "Side-by--side" = "sbs"),
                                         selected = "sbs", size = "sm")),
-               column(4, sliderInput("age", tagList("Vantage age a", help_mark("age")),
+               column(4, sliderInput("age", tagList(tx("Vantage age a"), help_mark("age")),
                                      min = 0, max = 90, value = 35, step = 1))
              ),
              conditionalPanel("input.cond == '__manual__'",
                fluidRow(
-                 column(4, sliderInput("onset", tagList("Onset age (a')", help_mark("onset")),
+                 column(4, sliderInput("onset", tagList(tx("Onset age (a')"), help_mark("onset")),
                                        min = 0, max = 100,
                                        value = 45, step = 1)),
-                 column(4, sliderInput("m", tagList("HRQoL scale from onset (1 = none)",
+                 column(4, sliderInput("m", tagList(tx("HRQoL scale from onset (1 = none)"),
                                                     help_mark("m")),
                                        min = 0.1, max = 1, value = 0.6, step = 0.05)),
                  column(4, sliderInput("or_log", tagList(
-                                         "log\u2082-mortality OR from onset (0 = no excess)",
+                                         tx("log\u2082-mortality OR from onset (0 = no excess)"),
                                          help_mark("or_log")),
                                        min = 0, max = 10, value = 1, step = 0.025)),
                ),
@@ -870,83 +877,83 @@ ui <- fluidPage(
     ),
 
     ## ---- Condition Editor-------------------------------------------
-    tabPanel("Condition editor",
+    tabPanel(tx("Condition editor"),
              br(),
-             fluidRow(column(1,h3('Condition editor')),
-                      column(1,actionButton("cond_reset", "Reset condition",class = "btn-danger",
+             fluidRow(column(1,h3(tx('Condition editor'))),
+                      column(1,actionButton("cond_reset", tx("Reset condition"),class = "btn-danger",
                                             style = "margin-top:25px;width:100%;"))),
              fluidRow(
                column(6,
-                      h4("Mortality OR profile"),
-                      helpText("Age 0 pinned at OR 1; age", TOP, "inherits the last knot. ",
-                               "Click a marker to activate. Double-click the plot to add a ",
-                               "knot, or double-click a marker to remove it."),
+                      h4(tx("Mortality OR profile")),
+                      helpText(tx("Age 0 pinned at OR 1; age"), TOP, tx("inherits the last knot. "),
+                               tx("Click a marker to activate. Double-click the plot to add a "),
+                               tx("knot, or double-click a marker to remove it.")),
                      
                         
                       fluidRow(
-                        column(2, selectInput("or_rule", "Between knots",
+                        column(2, selectInput("or_rule", tx("Between knots"),
                                               c("shock (step)" = "constant",
                                                 "ramp (linear)" = "linear"),
                                               selected = "constant")),
-                        column(5, sliderInput("or_age", "Active knot age",
+                        column(5, sliderInput("or_age", tx("Active knot age"),
                                               min = 1, max = TOP - 1, value = 30,
                                               step = 1, width = "100%")),
-                        column(5, sliderInput("or_slider", "Active knot OR (log\u2082)",
+                        column(5, sliderInput("or_slider", tx("Active knot OR (log\u2082)"),
                                               min = 0, max = 10, value = 1,
                                               step = 0.05, width = "100%"))),
                       uiOutput("or_age_ui"),
                       plotOutput("or_preview", height = "170px",
                                  click = "or_click", dblclick = "or_dbl")),
                column(6,
-                      h4("HRQoL scale profile"),
-                      helpText("Age 0 pinned at scale 1; age", TOP, "inherits the last knot. ",
-                               "Click a marker to activate. Double-click the plot to add a ",
-                               "knot, or double-click a marker to remove it."),
+                      h4(tx("HRQoL scale profile")),
+                      helpText(tx("Age 0 pinned at scale 1; age"), TOP, tx("inherits the last knot. "),
+                               tx("Click a marker to activate. Double-click the plot to add a "),
+                               tx("knot, or double-click a marker to remove it.")),
                       fluidRow(
-                        column(2, selectInput("m_rule", "Between knots",
+                        column(2, selectInput("m_rule", tx("Between knots"),
                                               c("shock (step)" = "constant",
                                                 "ramp (linear)" = "linear"),
                                               selected = "constant")),
-                        column(5, sliderInput("m_age", "Active knot age",
+                        column(5, sliderInput("m_age", tx("Active knot age"),
                                               min = 1, max = TOP - 1, value = 30,
                                               step = 1, width = "100%")),
-                        column(5, sliderInput("m_slider", "Active knot scale",
+                        column(5, sliderInput("m_slider", tx("Active knot scale"),
                                               min = 0.05, max = 1, value = 0.6,
                                               step = 0.01, width = "100%"))),
                       plotOutput("m_preview", height = "170px",
                                  click = "m_click", dblclick = "m_dbl"))
              ),
              hr(),
-             h5("Preview against the selected reference life table and HRQoL-norm:"),
+             h5(tx("Preview against the selected reference life table and HRQoL-norm:")),
              fluidRow(
-               column(4, sliderInput("a_auth", tagList("Vantage age", help_mark("a_auth")),
+               column(4, sliderInput("a_auth", tagList(tx("Vantage age"), help_mark("a_auth")),
                                      min = 0, max = 90,
                                      value = 0, step = 1)),
                column(2,
-                      radioGroupButtons("auth_view", tagList("Layout", help_mark("view")),
+                      radioGroupButtons("auth_view", tagList(tx("Layout"), help_mark("view")),
                                         c("Overlaid" = "ov", "Side-by--side" = "sbs"),
                                         selected = "sbs", size = "sm"))
              ),
              plotOutput("auth_plot", height = "300px"),
              uiOutput("auth_compare"),
              hr(),
-             h5("Save condition"),
+             h5(tx("Save condition")),
              fluidRow(
-               column(4, textInput("cond_label", "Menu label", value = "New condition")),
-               column(4, textInput("cond_id", "Container id", value = "new_condition")),
+               column(4, textInput("cond_label", tx("Menu label"), value = "New condition")),
+               column(4, textInput("cond_id", tx("Container id"), value = "new_condition")),
                column(4, div(style = "margin-top:25px;", uiOutput("cond_saveui")))
              ),
              fluidRow(
-               column(12, textInput("cond_summary", "Info summary", value = "",
+               column(12, textInput("cond_summary", tx("Info summary"), value = "",
                                     width = "100%"))),
              fluidRow(
-               column(6, textInput("cond_cite", "Source citation", value = "")),
-               column(6, textInput("cond_url", "Source url", value = ""))),
+               column(6, textInput("cond_cite", tx("Source citation"), value = "")),
+               column(6, textInput("cond_url", tx("Source url"), value = ""))),
              div(style = "color:#666;font-size:12px;", uiOutput("export_msg")),
              fluidRow(
-               column(2, actionButton("edit_load_go", "Load", class = "btn-primary",
+               column(2, actionButton("edit_load_go", tx("Load"), class = "btn-primary",
                                       style = "margin-top:25px;width:100%;")),
-               column(5, selectInput("edit_load", "Load condition into editor",
+               column(5, selectInput("edit_load", tx("Load condition into editor"),
                                      choices = c("(none)" = ""), width = "100%")),
                column(5, div(style = "margin-top:28px;font-size:12px;",
                              uiOutput("edit_load_msg")))
@@ -960,39 +967,39 @@ ui <- fluidPage(
              
     ),
     ## ---- Value potential --------------------------------------------
-    tabPanel("Value potential",
+    tabPanel(tx("Value potential"),
              br(),
-             fluidRow(column(6,h3('Value potential visualiser'))),
+             fluidRow(column(6,h3(tx('Value potential visualiser')))),
              tags$p(style = "color:#666;",
-                    "A flat unit stream of years over a horizon, discounted at the shared ",
-                    "\u03c1. No HRQoL and no severity regime \u2013 the discounting kernel on ",
-                    "its own, showing where the present value of a future is located."),
+                    tx("A flat unit stream of years over a horizon, discounted at the shared "),
+                    tx("\u03c1. No HRQoL and no severity regime \u2013 the discounting kernel on "),
+                    tx("its own, showing where the present value of a future is located.")),
              fluidRow(
                column(2,radioGroupButtons(
-                 "vp_hmode", "Horizon set by",
+                 "vp_hmode", tx("Horizon set by"),
                  c("years" = "t", "age \u2192 e(age)" = "a"),
                  selected = "a", size = "sm")),
                column(2, conditionalPanel(
                  "input.vp_hmode == 't'",
-                 numericInput("vp_T", "Horizon t (years, any t > 0)",
+                 numericInput("vp_T", tx("Horizon t (years, any t > 0)"),
                               value = 53, min = 0.5, step = 1))),
                column(4, conditionalPanel(
                  "input.vp_hmode == 'a'",
-                 sliderInput("vp_age", tagList("Age (years)", help_mark("vp_age")),
+                 sliderInput("vp_age", tagList(tx("Age (years)"), help_mark("vp_age")),
                              min = 0, max = 90,
                              value = 32, step = 1)))
              ),
-             sliderInput("vp_N", tagList("Near window: first N years", help_mark("vp_N")),
+             sliderInput("vp_N", tagList(tx("Near window: first N years"), help_mark("vp_N")),
                          min = 0, max = 60,
                          value = 10, step = 0.5, width = "100%"),
              plotOutput("vp_plot", height = "300px"),
              uiOutput("vp_sentence"),
              fluidRow(
-               column(4, wellPanel(tags$small("balance point r\u2032"),
+               column(4, wellPanel(tags$small(tx("balance point r\u2032")),
                                    tags$h3(textOutput("vp_rp", inline = TRUE)))),
                column(4, wellPanel(uiOutput("vp_nsh_label"),
                                    tags$h3(textOutput("vp_nsh", inline = TRUE)))),
-               column(4, wellPanel(tags$small("product f \u00d7 t"),
+               column(4, wellPanel(tags$small(tx("product f \u00d7 t")),
                                    tags$h3(textOutput("vp_u", inline = TRUE))))
              ),
              div(style = "color:#888;font-size:12px;", textOutput("vp_note"))
@@ -1017,17 +1024,17 @@ server <- function(input, output, session) {
     o <- conds_r()[[sub("^cond:", "", id)]]
     if (is.null(o)) return(NULL)
     lab <- attr(o, "menu_label") %||% id
-    src <- paste0("DERIVED from condition '", lab,
-                  "' \u2013 not a published reference")
+    src <- paste0(tx("DERIVED from condition '"), lab,
+                  tx("' \u2013 not a published reference"))
     if (identical(what, "norm"))
       structure(data.frame(age = o$age, hrqol = o$hrqol),
                 region = "derived", sex = "any", valueset = "derived",
-                source = src, label = paste0("[condition] ", lab),
+                source = src, label = paste0(tx("[condition] "), lab),
                 canonical = FALSE)
     else
       structure(data.frame(a = o$age, mu = o$mu),
                 region = "derived", sex = "any",
-                source = src, label = paste0("[condition] ", lab),
+                source = src, label = paste0(tx("[condition] "), lab),
                 canonical = FALSE)
   }
   
@@ -1096,7 +1103,7 @@ server <- function(input, output, session) {
     if (isTRUE(input$use_cond_ref) && length(cd)) {
       cl    <- .labels_for(cd)          # names = display label, values = id
       extra <- stats::setNames(paste0("cond:", unname(cl)),
-                               paste0("[condition] ", names(cl)))
+                               paste0(tx("[condition] "), names(cl)))
     }
     updateSelectInput(session, "norm",
                       choices  = c(.labels_for(norms_r()), extra),
@@ -1125,7 +1132,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$reload, {
     refresh_store()
-    showNotification("Refreshed from disk", type = "message")
+    showNotification(tx("Refreshed from disk"), type = "message")
   })
   
   ## Remaining survival slider####
@@ -1135,9 +1142,9 @@ server <- function(input, output, session) {
   
   ## regime table: max, step, and the land-value when ENTERING each unit
   .rs_regime <- list(
-    yr = list(min = 0, max = 40, step = 1,  land = 5,  lab = "RS (years)"),
-    mo = list(min = 1, max = 24, step = 1,  land = 12, lab = "RS (months)"),
-    da = list(min = 0, max = 90, step = 1,  land = 30, lab = "RS (days)"))
+    yr = list(min = 0, max = 40, step = 1,  land = 5,  lab = tx("RS (years)")),
+    mo = list(min = 1, max = 24, step = 1,  land = 12, lab = tx("RS (months)")),
+    da = list(min = 0, max = 90, step = 1,  land = 30, lab = tx("RS (days)")))
   
   .set_rs <- function(u, land = NULL) {
     g <- .rs_regime[[u]]; rs_unit(u)
@@ -1197,7 +1204,7 @@ server <- function(input, output, session) {
     if (!isTruthy(input$r) || !is.finite(input$r) || input$r >= 0) return(NULL)
     div(style = sprintf("font-family:%s;color:%s;font-size:12px;margin-top:-4px;",
                         FONT_BODY, pal[['SPRed']]),
-        HTML(sprintf("\u25B2 <b>Experimental:</b> \u03c1 = %.3f weights distant life-years <em>above</em> near ones. No jurisdiction's reference case permits this; shown to bracket the operator's effect, not as a policy option.", input$r)))
+        HTML(sprintf(txm("\u25B2 <b>Experimental:</b> \u03c1 = %.3f weights distant life-years <em>above</em> near ones. No jurisdiction's reference case permits this; shown to bracket the operator's effect, not as a policy option."), input$r)))
   })
   
   
@@ -1220,32 +1227,32 @@ server <- function(input, output, session) {
   wlab_long <- reactive({
     v <- input$rs
     u <- switch(rs_unit(),
-                yr = if (v == 1) "year"  else "years",
-                mo = if (v == 1) "month" else "months",
-                da = if (v == 1) "day"   else "days")
+                yr = if (v == 1) tx("year")  else tx("years"),
+                mo = if (v == 1) tx("month") else tx("months"),
+                da = if (v == 1) tx("day")   else tx("days"))
     sprintf("%g %s", v, u)
   })
   
   output$src <- renderText({
-    paste0("table: ", attr(tbO(),"source") %||% "user",
-           "  |  norm: ", attr(nmO(),"source") %||% "user",
-           "  |  regime: ", set()$label %||% set()$id)
+    paste0(tx("table: "), attr(tbO(),"source") %||% "user",
+           tx("  |  norm: "), attr(nmO(),"source") %||% "user",
+           tx("  |  regime: "), set()$label %||% set()$id)
   })
   
   output$rs_hint <- renderText({
     switch(rs_unit(),
-           yr = "drag to 1 to switch to months",
-           mo = "drag to 1 -> days;  above 22 -> years",
-           da = "above 60 -> months")
+           yr = tx("drag to 1 to switch to months"),
+           mo = tx("drag to 1 -> days;  above 22 -> years"),
+           da = tx("above 60 -> months"))
   })
   
   ## -- compatibility badge (never blocks) --------------------------##
   output$badge <- renderUI({
     cmp <- compatible(set(), nmO(), tbO(), input$norm, input$table)
     cls <- paste0("badge-", cmp$status)
-    dot <- c(green="\u25CF Fully consistent pairing",
-             amber="\u25B2 Plausible \u2013 unverified",
-             red  ="\u25B2 Experimental/Off-label")[[cmp$status]]
+    dot <- c(green=tx("\u25CF Fully consistent pairing"),
+             amber=tx("\u25B2 Plausible \u2013 unverified"),
+             red  =tx("\u25B2 Experimental/Off-label"))[[cmp$status]]
     tagList(
       span(class = cls, style="font-weight:600;", dot),
       if (length(cmp$reasons))
@@ -1397,12 +1404,12 @@ server <- function(input, output, session) {
     lab_l <- wlab_long()
     if ("AS" %in% s$measures)
       p <- add_trace(p, x=AGES, y=d[,'AS'], type='scatter', mode='lines',
-                     name=paste0('AS at ', lab_l, ' RS'),        # verbose legend
+                     name=paste0(tx('AS at '), lab_l, ' RS'),        # verbose legend
                      line=list(color=LINE, width=3),
                      hovertemplate=paste0('age %{x}<br>AS %{y:.1f}<extra>',lab,'</extra>'))  # terse hover
     if ("PS" %in% s$measures)
       p <- add_trace(p, x=AGES, y=d[,'PS'], type='scatter', mode='lines', yaxis='y2',
-                     name=paste0('PS at ', lab_l, ' RS'),        # verbose legend
+                     name=paste0(tx('PS at '), lab_l, ' RS'),        # verbose legend
                      line=list(color=LINE, width=2, dash='dot'),
                      hovertemplate=paste0('age %{x}<br>PS %{y:.0%}<extra>',lab,'</extra>'))  # terse hover
     
@@ -1449,10 +1456,10 @@ server <- function(input, output, session) {
     
     show_ps <- "PS" %in% s$measures
     p |> layout(
-      xaxis=list(title='Age at onset = Age of shortfall estimation', showgrid=FALSE, zeroline=FALSE),
-      yaxis=list(title='Absolute shortfall (QADLE)', range=c(0,as_max),
+      xaxis=list(title=tx('Age at onset = Age of shortfall estimation'), showgrid=FALSE, zeroline=FALSE),
+      yaxis=list(title=tx('Absolute shortfall (QADLE)'), range=c(0,as_max),
                  gridcolor='#EEEEEE', zeroline=FALSE),
-      yaxis2=list(title=if (show_ps) 'Proportional shortfall' else '',
+      yaxis2=list(title=if (show_ps) tx('Proportional shortfall') else '',
                   overlaying='y', side='right', range=c(0,1),
                   tickformat='.0%', showgrid=FALSE, zeroline=FALSE,
                   visible=show_ps),
@@ -1475,7 +1482,7 @@ server <- function(input, output, session) {
     ed_bands$PS <- if ("PS" %in% s$measures) s$bands$PS else NULL
     ed_measures(s$measures)
     updateTextInput(session, "ed_id",    value = paste0(s$id, "_edit"))
-    updateTextInput(session, "ed_label", value = paste0(s$label %||% s$id, " (edited)"))
+    updateTextInput(session, "ed_label", value = paste0(s$label %||% s$id, tx(" (edited)")))
     updateSelectInput(session, "ed_rule", selected = s$rule)
     updateCheckboxGroupInput(session, "ed_meas", selected = s$measures)
     updateSelectInput(session, "ed_wn",   selected = s$weight_native)
@@ -1483,7 +1490,7 @@ server <- function(input, output, session) {
   
   ## render an editable numeric grid for one measure's bands
   band_grid <- function(m) {
-    b <- ed_bands[[m]]; if (is.null(b)) return(div(em("(Measure not in this set)")))
+    b <- ed_bands[[m]]; if (is.null(b)) return(div(em(tx("(Measure not in this set)"))))
     rows <- lapply(seq_len(nrow(b)), function(k) fluidRow(
       column(4, numericInput(paste0("ed_",m,"_lo_",k), if (k==1) "lower" else NULL, b$lower[k], step=0.01)),
       column(4, numericInput(paste0("ed_",m,"_up_",k), if (k==1) "upper" else NULL, b$upper[k], step=0.01)),
@@ -1546,8 +1553,8 @@ server <- function(input, output, session) {
   
   ## mode-appropriate save control
   output$ed_saveui <- renderUI({
-    if (identical(APP_MODE, "local")) actionButton("ed_save", "Save")
-    else downloadButton("ed_download", "Download regime (.rds)")
+    if (identical(APP_MODE, "local")) actionButton("ed_save", tx("Save"))
+    else downloadButton("ed_download", tx("Download regime (.rds)"))
   })
   
   ## LOCAL: persist to overlay (never touches canonical shortfalls_data.rds)
@@ -1555,11 +1562,11 @@ server <- function(input, output, session) {
     set <- tryCatch(ed_candidate(), error = function(e) { showNotification(conditionMessage(e), type="error"); NULL })
     if (is.null(set)) return()
     if (set$id %in% names(sevsets_r()) && !isFALSE(sevsets_r()[[set$id]]$canonical)) {
-      showNotification("id collides with a canonical regime; choose another id", type="error"); return() }
+      showNotification(tx("id collides with a canonical regime; choose another id"), type="error"); return() }
     save_user_sevset(set)
     authored(union(authored(), set$id))
     refresh_store()
-    showNotification(paste0("saved '", set$id, "'"), type="message")
+    showNotification(paste0(tx("saved '"), set$id, "'"), type="message")
   })
   
   ## SERVER: download only, no disk write
@@ -1583,7 +1590,7 @@ server <- function(input, output, session) {
   ## rule is a real choice only with BOTH measures; hidden for one/none.
   output$ed_rule_ui <- renderUI({
     if (length(input$ed_meas) == 2)
-      selectInput("ed_rule", "Rule (combine AS & PS)", c("max","min","mean"),
+      selectInput("ed_rule", tx("Rule (combine AS & PS)"), c("max","min","mean"),
                   selected = isolate(input$ed_rule) %||% "max")
     else NULL
   })
@@ -1591,10 +1598,10 @@ server <- function(input, output, session) {
   output$ed_delui <- renderUI({
     if (!identical(APP_MODE,"local")) return(NULL)   # no overlay to delete on a server
     ids <- overlay_ids()
-    if (!length(ids)) return(div(em("(no authored regimes to delete)")))
+    if (!length(ids)) return(div(em(tx("(no authored regimes to delete)"))))
     tagList(
-      selectInput("ed_del_id", "Delete authored regime", choices = ids),
-      actionButton("ed_delete", "Delete", class = "btn-danger")
+      selectInput("ed_del_id", tx("Delete authored regime"), choices = ids),
+      actionButton("ed_delete", tx("Delete"), class = "btn-danger")
     )
   })
   # To be implemented
@@ -1617,15 +1624,15 @@ server <- function(input, output, session) {
     ## guard: never delete a canonical regime (should be impossible -- the
     ## menu lists overlay ids only -- but check the shipped store to be sure)
     if (id %in% names(sevsets_r()) && !isFALSE(sevsets_r()[[id]]$canonical)) {
-      showNotification("refusing: that is a built-in regime", type="error"); return() }
+      showNotification(tx("refusing: that is a built-in regime"), type="error"); return() }
     ov <- tryCatch(readRDS(SF_USER), error=function(e) NULL)
     if (is.null(ov) || !id %in% names(ov$sf_thresholds)) {
-      showNotification("not found in overlay", type="warning"); return() }
+      showNotification(tx("not found in overlay"), type="warning"); return() }
     ov$sf_thresholds[[id]] <- NULL
     saveRDS(ov, SF_USER)
     refresh_overlay_ids()
     refresh_store()
-    showNotification(paste0("Deleted '", id, "'"), type="message")
+    showNotification(paste0(tx("Deleted '"), id, "'"), type="message")
   })
   
   
@@ -1663,14 +1670,14 @@ server <- function(input, output, session) {
   output$ex_ref_note <- renderUI({
     s <- ex_ref()$src
     if (is.null(s))
-      HTML(sprintf(paste0("Reference: life table <b>%s</b>; HRQoL norm <b>%s</b> ",
-                          "(from the header selection)."),
+      HTML(sprintf(paste0(txm("Reference: life table <b>%s</b>; HRQoL norm <b>%s</b> "),
+                          tx("(from the header selection).")),
                    .obj_label(tbls_r(),  input$table),
                    .obj_label(norms_r(), input$norm)))
     else
-      HTML(sprintf(paste0("Reference set by the loaded condition: life table <b>%s</b>; ",
-                          "HRQoL norm <b>%s</b> \u2013 the header selection is overridden ",
-                          "so the stored condition is shown exactly as authored."),
+      HTML(sprintf(paste0(txm("Reference set by the loaded condition: life table <b>%s</b>; "),
+                          txm("HRQoL norm <b>%s</b> \u2013 the header selection is overridden "),
+                          tx("so the stored condition is shown exactly as authored.")),
                    .obj_label(tbls_r(), s$table),
                    .obj_label(norms_r(), s$norm)))
   })
@@ -1707,14 +1714,14 @@ server <- function(input, output, session) {
       par(mfrow = c(1, 2))
       x0 <- build_stack(input$age, v$or_v, v$m_v, 0,        rf$qx, rf$qv, input$disc)
       xr <- build_stack(input$age, v$or_v, v$m_v, input$r,  rf$qx, rf$qv, input$disc)
-      draw_stack(x0, bands = TRUE, main = "undiscounted (\u03c1 = 0.0%)")
+      draw_stack(x0, bands = TRUE, main = tx("undiscounted (\u03c1 = 0.0%)"))
       if (s > 0)
         draw_stack_pv(xr, input$disc, s,
-                      main = sprintf("discounted (\u03c1 = %.1f%%, split %d%%)",
+                      main = sprintf(tx("discounted (\u03c1 = %.1f%%, split %d%%)"),
                                      100 * input$r, round(100 * s)))
       else
         draw_stack(xr, bands = TRUE, disc_view = TRUE,
-                   main = sprintf("discounted (\u03c1 = %.1f%%)", 100 * input$r))
+                   main = sprintf(tx("discounted (\u03c1 = %.1f%%)"), 100 * input$r))
       par(mfrow = c(1, 1))
     } else {
       draw_stack(ex(), bands = TRUE, split = s, mode = input$disc)
@@ -1729,10 +1736,10 @@ server <- function(input, output, session) {
                                        "border-radius:2px;background:%s;margin-right:5px;",
                                        "vertical-align:-1px;"), c)), lab)
     tags$div(style = "margin:8px 0;line-height:1.9;",
-      chip(BAND$norm, "norm HRQoL (population)"),
-      chip(BAND$mort, sprintf("mortality shortfall \u2248 %.1f", x$mort)),
-      chip(BAND$morb, sprintf("morbidity shortfall \u2248 %.1f", x$morb)),
-      chip(BAND$qale, sprintf("delivered QALE \u2248 %.1f undisc / %.1f disc",
+      chip(BAND$norm, tx("norm HRQoL (population)")),
+      chip(BAND$mort, sprintf(tx("mortality shortfall \u2248 %.1f"), x$mort)),
+      chip(BAND$morb, sprintf(tx("morbidity shortfall \u2248 %.1f"), x$morb)),
+      chip(BAND$qale, sprintf(tx("delivered QALE \u2248 %.1f undisc / %.1f disc"),
                               x$QALEc, x$QALEc_d)))
   })
 
@@ -1740,8 +1747,8 @@ server <- function(input, output, session) {
   output$compare <- renderUI(compare_table(
     ex(),
     if (is.null(input$cond) || identical(input$cond, "__manual__"))
-      sprintf("onset %d, from age %d", input$onset, input$age)
-    else sprintf("from age %d", input$age),
+      sprintf(tx("onset %d, from age %d"), input$onset, input$age)
+    else sprintf(tx("from age %d"), input$age),
     set()))
 
   output$cond_info <- renderUI({
@@ -1785,7 +1792,7 @@ server <- function(input, output, session) {
     a <- round(dbl$x)                                    # otherwise add
     if (a < 1 || a > TOP - 1 || a %in% cur$age) return(invisible())
     if (nrow(cur) >= KNOT_MAX) {
-      showNotification(sprintf("%s interior knots is the maximum", KNOT_MAX), type = "warning")
+      showNotification(sprintf(tx("%s interior knots is the maximum"), KNOT_MAX), type = "warning")
       return(invisible())
     }
     new <- rbind(cur, data.frame(age = a, value = vec[a + 1]))
@@ -1844,7 +1851,7 @@ server <- function(input, output, session) {
   sync_sliders <- function(which) {
     cur <- KN[[which]]; i <- KN[[paste0(which, "_active")]]
     if (nrow(cur) == 0 || i > nrow(cur)) {
-      lab <- "(no knots \u2013 double-click the plot to add one)"
+      lab <- tx("(no knots \u2013 double-click the plot to add one)")
       updateSliderInput(session, paste0(which, "_age"), label = lab)
       return(invisible())
     }
@@ -1855,7 +1862,7 @@ server <- function(input, output, session) {
     else
       updateSliderInput(session, "m_slider", value = cur$value[i])
     updateSliderInput(session, paste0(which, "_age"),
-                      label = sprintf("Knot %d age", i),
+                      label = sprintf(tx("Knot %d age"), i),
                       min = b[1], max = b[2], value = cur$age[i])
   }
   
@@ -1890,7 +1897,7 @@ server <- function(input, output, session) {
     updateTextInput(session, "cond_cite",    value = "")
     updateTextInput(session, "cond_url",     value = "")
     output$edit_load_msg <- renderUI(NULL)
-    showNotification("Reset condition editor", type = "message")})
+    showNotification(tx("Reset condition editor"), type = "message")})
   
   
   ## Neighbours may have moved, or knots been added/removed. Refresh the
@@ -1919,7 +1926,7 @@ server <- function(input, output, session) {
     i <- KN$or_active; age <- cur$age[i]; OR <- cur$value[i]
     qref <- qx()[age + 1]; qsoc <- or_hit(qref, OR)
     div(style = sprintf("font-family:%s;font-size:12px;color:#555;margin-top:-8px;", FONT_BODY),
-        HTML(sprintf("OR <b>%.2f</b> at age <b>%d</b> \u2013 ref q = %.4f &rarr; soc q = <b>%.4f</b>",
+        HTML(sprintf(txm("OR <b>%.2f</b> at age <b>%d</b> \u2013 ref q = %.4f &rarr; soc q = <b>%.4f</b>"),
                      OR, age, qref, qsoc)))
   })
   output$m_age_ui <- renderUI({
@@ -1927,7 +1934,7 @@ server <- function(input, output, session) {
     i <- KN$m_active; age <- cur$age[i]; sc <- cur$value[i]
     href <- qv()[age + 1]; hsoc <- href * sc
     div(style = sprintf("font-family:%s;font-size:12px;color:#555;margin-top:-8px;", FONT_BODY),
-        HTML(sprintf("scale <b>%.2f</b> at age <b>%d</b> \u2013 ref hrqol = %.3f &rarr; soc hrqol = <b>%.3f</b>",
+        HTML(sprintf(txm("scale <b>%.2f</b> at age <b>%d</b> \u2013 ref hrqol = %.3f &rarr; soc hrqol = <b>%.3f</b>"),
                      sc, age, href, hsoc)))
   })
   
@@ -1954,7 +1961,7 @@ server <- function(input, output, session) {
     qxv <- qx(); ov <- or_vec()
     Sc  <- c(1, cumprod(1 - or_hit(qxv, ov)[-length(ov)]))
     plot(0:TOP, Sc, type = "l", col = STROKE$cond, lwd = 2, ylim = c(0, 1),
-         xlab = "age", ylab = "induced survival S_c", family = "serif")
+         xlab = tx("age"), ylab = tx("induced survival S_c"), family = "serif")
     lines(0:TOP, c(1, cumprod(1 - qxv[-length(qxv)])), col = STROKE$surv, lty = 2)
     cur <- KN$or
     if (nrow(cur) > 0) {
@@ -1968,7 +1975,7 @@ server <- function(input, output, session) {
     par(mar = c(3, 3.4, 0.5, 0.5))
     qvv <- qv(); mv <- m_vec()
     plot(0:TOP, mv * qvv, type = "l", col = STROKE$cond, lwd = 2, ylim = c(0, 1),
-         xlab = "age", ylab = "induced HRQoL q_c", family = "serif")
+         xlab = tx("age"), ylab = tx("induced HRQoL q_c"), family = "serif")
     lines(0:TOP, qvv, col = STROKE$ref, lty = 2)
     cur <- KN$m
     if (nrow(cur) > 0) {
@@ -1990,21 +1997,21 @@ server <- function(input, output, session) {
       par(mfrow = c(1, 2))
       x0 <- build_stack(input$a_auth, or_vec(), m_vec(), 0,       qx(), qv(), input$disc)
       xr <- build_stack(input$a_auth, or_vec(), m_vec(), input$r, qx(), qv(), input$disc)
-      draw_stack(x0, bands = TRUE, main = "undiscounted (\u03c1 = 0)")
+      draw_stack(x0, bands = TRUE, main = tx("undiscounted (\u03c1 = 0)"))
       if (s > 0)
         draw_stack_pv(xr, input$disc, s,
-                      main = sprintf("discounted (\u03c1 = %.1f%%, split %d%%)",
+                      main = sprintf(tx("discounted (\u03c1 = %.1f%%, split %d%%)"),
                                      100 * input$r, round(100 * s)))
       else
         draw_stack(xr, bands = TRUE, disc_view = TRUE,
-                   main = sprintf("discounted (\u03c1 = %.1f%%)", 100 * input$r))
+                   main = sprintf(tx("discounted (\u03c1 = %.1f%%)"), 100 * input$r))
       par(mfrow = c(1, 1))
     } else {
       draw_stack(auth(), bands = TRUE, split = s, mode = input$disc)
     }
   })
   output$auth_compare <- renderUI(
-    compare_table(auth(), sprintf("preview from age %d", input$a_auth), set()))
+    compare_table(auth(), sprintf(tx("preview from age %d"), input$a_auth), set()))
   
   
   ## ---- load an existing condition back into the knot editor
@@ -2013,7 +2020,7 @@ server <- function(input, output, session) {
     if (is.null(id) || !nzchar(id)) { output$edit_load_msg <- renderUI(NULL); return() }
     obj <- conds_r()[[id]]
     if (is.null(obj)) {
-      output$edit_load_msg <- renderUI(span(style = "color:#b00;", "Could not read condition!"))
+      output$edit_load_msg <- renderUI(span(style = "color:#b00;", tx("Could not read condition!")))
       return()
     }
     hs <- attr(obj, "hit_spec"); rr <- attr(obj, "reference") %||% list()
@@ -2024,13 +2031,13 @@ server <- function(input, output, session) {
     ref_note <- if (!identical(rr$table %||% "", input$table) ||
                     !identical(rr$norm  %||% "", input$norm))
       span(style = "color:#a60;",
-           sprintf("Authored against %s / %s; the editor is on %s / %s. Knots are restored, but the saved soc values will be re-measured against the current selection.",
+           sprintf(tx("Authored against %s / %s; the editor is on %s / %s. Knots are restored, but the saved soc values will be re-measured against the current selection."),
                    rr$table %||% "?", rr$norm %||% "?", input$table, input$norm))
     
     if (is.null(hs) || is.null(hs$or_knots) || is.null(hs$hrqol_knots)) {
       output$edit_load_msg <- renderUI(tagList(
         span(style = "color:#a60;",
-             "This condition has no knot structure \u2013 it can be explored, but not knot-edited here."),
+             tx("This condition has no knot structure \u2013 it can be explored, but not knot-edited here.")),
         if (!is.null(ref_note)) tagList(br(), ref_note)))
       return()
     }
@@ -2060,7 +2067,7 @@ server <- function(input, output, session) {
     
     output$edit_load_msg <- renderUI(tagList(
       span(style = "color:#060;",
-           sprintf("loaded '%s'  (%d OR knots, %d HRQoL knots)",
+           sprintf(tx("loaded '%s'  (%d OR knots, %d HRQoL knots)"),
                    attr(obj, "menu_label") %||% id, nrow(or_int), nrow(m_int))),
       if (!is.null(ref_note)) tagList(br(), ref_note)))
   })
@@ -2085,7 +2092,7 @@ server <- function(input, output, session) {
   
   output$cond_delbtn <- renderUI({
     if (!identical(APP_MODE, "local") || !length(cond_overlay_ids())) return(NULL)
-    actionButton("cond_delete", "Delete", class = "btn-danger",
+    actionButton("cond_delete", tx("Delete"), class = "btn-danger",
                  style = "margin-top:25px;width:100%;")
   })
   
@@ -2094,12 +2101,12 @@ server <- function(input, output, session) {
     ids <- cond_overlay_ids()
     if (!length(ids))
       return(div(style = "margin-top:28px;font-size:12px;color:#888;",
-                 em("(No authored condition(s) to delete)")))
+                 em(tx("(No authored condition(s) to delete)"))))
     lab <- vapply(ids, function(i) {
       o <- conds_r()[[i]]
       if (is.null(o)) i else attr(o, "menu_label") %||% i
     }, "")
-    selectInput("cond_del_id", "Delete condition",
+    selectInput("cond_del_id", tx("Delete condition"),
                 choices = stats::setNames(ids, lab), width = "100%")
   })
   
@@ -2110,15 +2117,15 @@ server <- function(input, output, session) {
     ## the menu lists overlay ids only -- but check the store to be sure.
     if (id %in% names(conds_r()) &&
         isTRUE(attr(conds_r()[[id]], "canonical"))) {
-      showNotification("Shipped condition cannot be deleted from the app", type = "error"); return() }
+      showNotification(tx("Shipped condition cannot be deleted from the app"), type = "error"); return() }
     ov <- tryCatch(readRDS(SF_USER), error = function(e) NULL)
     if (is.null(ov) || !id %in% names(ov$sf_conditions)) {
-      showNotification("Not found in overlay", type = "warning"); return() }
+      showNotification(tx("Not found in overlay"), type = "warning"); return() }
     ov$sf_conditions[[id]] <- NULL
     saveRDS(ov, SF_USER)
     refresh_cond_ids()
     refresh_store()
-    showNotification(paste0("Deleted '", id, "'"),
+    showNotification(paste0(tx("Deleted '"), id, "'"),
                      type = "message")
   })
   
@@ -2146,9 +2153,9 @@ server <- function(input, output, session) {
   
   output$cond_saveui <- renderUI({
     if (identical(APP_MODE, "local"))
-      actionButton("cond_save", "Save", class = "btn-primary")
+      actionButton("cond_save", tx("Save"), class = "btn-primary")
     else
-      downloadButton("cond_download", "Download condition (.rds)")
+      downloadButton("cond_download", tx("Download condition (.rds)"))
   })
   
   ## LOCAL: read-modify-write the WHOLE overlay. Never write only this
@@ -2158,13 +2165,13 @@ server <- function(input, output, session) {
     lab <- input$cond_label %||% ""
     if (!nzchar(id) || !nzchar(lab)) {
       output$export_msg <- renderUI(span(style = "color:#b00;",
-                                         "A condition needs both an id and a menu label."))
+                                         tx("A condition needs both an id and a menu label.")))
       return()
     }
     if (id %in% names(conds_r()) &&
         isTRUE(attr(conds_r()[[id]], "canonical"))) {
       output$export_msg <- renderUI(span(style = "color:#b00;",
-                                         sprintf("'%s' is a built-in condition; choose another id.", id)))
+                                         sprintf(tx("'%s' is a built-in condition; choose another id."), id)))
       return()
     }
     ov <- if (file.exists(SF_USER)) readRDS(SF_USER) else list()
@@ -2173,7 +2180,7 @@ server <- function(input, output, session) {
     saveRDS(ov, SF_USER)
     refresh_store()
     output$export_msg <- renderUI(span(style = "color:#060;",
-                                       sprintf("saved '%s' (%s).", id, lab)))
+                                       sprintf(tx("saved '%s' (%s)."), id, lab)))
   })
   
   ## ==== Value potential =============================================
@@ -2191,13 +2198,13 @@ server <- function(input, output, session) {
     if (identical(input$vp_hmode, "t")) {
       req(is.finite(input$vp_T), input$vp_T > 0)
       list(t = input$vp_T,
-           note = sprintf("Horizon set directly: t = %.1f yr.", input$vp_T))
+           note = sprintf(tx("Horizon set directly: t = %.1f yr."), input$vp_T))
     } else {
       req(is.finite(input$vp_age), input$vp_age >= 0)
       t <- e_at(input$vp_age, qx())
       req(is.finite(t), t > 0)
       list(t = t,
-           note = sprintf("Age %g \u2192 e(age) = %.1f yr, from %s.",
+           note = sprintf(tx("Age %g \u2192 e(age) = %.1f yr, from %s."),
                           input$vp_age, t, .obj_label(tbls_r(), input$table)))
     }
   })
@@ -2240,7 +2247,7 @@ server <- function(input, output, session) {
     ## Norway and the Netherlands measure shortfall. Say so.
     if (abs(f) < 1e-9)
       text(t/2, 0.5, family = "serif", col = "grey35", cex = 1.05,
-           labels = "\u03c1 = 0: every year weighs the same.\nValue share = time share.")
+           labels = tx("\u03c1 = 0: every year weighs the same.\nValue share = time share."))
     lines(tt, y, col = pal[["SPBlue"]], lwd = 2.5)
     abline(v = d$s, lty = 2, col = "grey45")
     ticks <- sort(unique(round(c(0, d$N, d$s, t), 1)))
@@ -2249,25 +2256,25 @@ server <- function(input, output, session) {
 
 
   output$vp_nsh_label <- renderUI(tags$small(sprintf(
-    "first %d%% of future (%.1f of %.1f yr) holds",
+    tx("first %d%% of future (%.1f of %.1f yr) holds"),
     round(100 * vp_calc()$N / vp_calc()$t), vp_calc()$N, vp_calc()$t)))
 
   output$vp_sentence <- renderUI({
     d <- vp_calc()
     if (abs(d$f) < 1e-9)
-      return(HTML(sprintf(paste0("At <b>\u03c1 = 0</b> the first <b>%.1f years</b> hold ",
-                                 "<b>%.0f%%</b> of the value \u2013 exactly their share of ",
-                                 "the horizon. No balance split exists: the kernel is flat, ",
-                                 "so every split is a balance point."),
+      return(HTML(sprintf(paste0(txm("At <b>\u03c1 = 0</b> the first <b>%.1f years</b> hold "),
+                                 txm("<b>%.0f%%</b> of the value \u2013 exactly their share of "),
+                                 tx("the horizon. No balance split exists: the kernel is flat, "),
+                                 tx("so every split is a balance point.")),
                           d$N, 100 * d$nshare)))
-    HTML(sprintf(paste0("The first <b>%.1f years</b> hold <b>%.1f%%</b> of the present value. ",
-                        "Balance split at <b>%.1f yr</b>: the near <b>%d%%</b> of the horizon ",
-                        "holds <b>%d%%</b> of the value."),
+    HTML(sprintf(paste0(txm("The first <b>%.1f years</b> hold <b>%.1f%%</b> of the present value. "),
+                        txm("Balance split at <b>%.1f yr</b>: the near <b>%d%%</b> of the horizon "),
+                        txm("holds <b>%d%%</b> of the value.")),
                  d$N, 100 * d$nshare, d$s, round(100 * d$s / d$t), round(100 * d$rp)))
   })
 
   output$vp_rp   <- renderText(sprintf("%.3f", vp_calc()$rp))
-  output$vp_nsh  <- renderText(sprintf("%.1f%% of value", 100 * vp_calc()$nshare))
+  output$vp_nsh  <- renderText(sprintf(tx("%.1f%% of value"), 100 * vp_calc()$nshare))
   output$vp_u    <- renderText(sprintf("%.2f", vp_calc()$u))
   output$vp_note <- renderText(vp_horizon()$note)
     
